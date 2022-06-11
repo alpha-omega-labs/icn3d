@@ -153,7 +153,7 @@ class Surface {
                 atomsToShow: Object.keys(atomsToShow),
                 extendedAtoms: extendedAtoms,
                 type: realType,
-                threshbox: (bTransparent) ? 60 : ic.threshbox,
+                threshbox: (ic.transparentRenderOrder) ? 60 : ic.threshbox,
                 bCalcArea: ic.bCalcArea
             };
 
@@ -357,8 +357,8 @@ class Surface {
         geo.type = 'Surface'; // to be recognized in vrml.js for 3D printing
 
         // use the regular way to show transparency for type == 15 (surface with potential)
-    //    if(bTransparent && (type == 1 || type == 2 || type == 3)) { // WebGL has some ordering problem when dealing with transparency
-        if(bTransparent) { // WebGL has some ordering problem when dealing with transparency
+    //    if(ic.transparentRenderOrder && (type == 1 || type == 2 || type == 3)) { // WebGL has some ordering problem when dealing with transparency
+        if(ic.transparentRenderOrder) { // WebGL has some ordering problem when dealing with transparency
           //var normalArrayIn = JSON.parse(JSON.stringify(geo)).data.normals;
           //var normalArrayIn = geo.getAttribute('normal').array;
 
@@ -415,17 +415,32 @@ class Surface {
                 //vertexColors.push(ic.atoms[verts[vb].atomid].color);
                 //vertexColors.push(ic.atoms[verts[vc].atomid].color);
 
-                colorArray[offset2++] = ic.atoms[verts[va].atomid].color.r;
-                colorArray[offset2++] = ic.atoms[verts[va].atomid].color.g;
-                colorArray[offset2++] = ic.atoms[verts[va].atomid].color.b;
+                if(type == 21 || type == 22 || type == 23) { // potential on surface
+                    colorArray[offset2++] = verts[va].color.r;
+                    colorArray[offset2++] = verts[va].color.g;
+                    colorArray[offset2++] = verts[va].color.b;
 
-                colorArray[offset2++] = ic.atoms[verts[vb].atomid].color.r;
-                colorArray[offset2++] = ic.atoms[verts[vb].atomid].color.g;
-                colorArray[offset2++] = ic.atoms[verts[vb].atomid].color.b;
+                    colorArray[offset2++] = verts[vb].color.r;
+                    colorArray[offset2++] = verts[vb].color.g;
+                    colorArray[offset2++] = verts[vb].color.b;
 
-                colorArray[offset2++] = ic.atoms[verts[vc].atomid].color.r;
-                colorArray[offset2++] = ic.atoms[verts[vc].atomid].color.g;
-                colorArray[offset2++] = ic.atoms[verts[vc].atomid].color.b;
+                    colorArray[offset2++] = verts[vc].color.r;
+                    colorArray[offset2++] = verts[vc].color.g;
+                    colorArray[offset2++] = verts[vc].color.b;
+                }
+                else {
+                    colorArray[offset2++] = ic.atoms[verts[va].atomid].color.r;
+                    colorArray[offset2++] = ic.atoms[verts[va].atomid].color.g;
+                    colorArray[offset2++] = ic.atoms[verts[va].atomid].color.b;
+    
+                    colorArray[offset2++] = ic.atoms[verts[vb].atomid].color.r;
+                    colorArray[offset2++] = ic.atoms[verts[vb].atomid].color.g;
+                    colorArray[offset2++] = ic.atoms[verts[vb].atomid].color.b;
+    
+                    colorArray[offset2++] = ic.atoms[verts[vc].atomid].color.r;
+                    colorArray[offset2++] = ic.atoms[verts[vc].atomid].color.g;
+                    colorArray[offset2++] = ic.atoms[verts[vc].atomid].color.b;
+                }
 
                 //var normals = [];
                 //normals.push(normalArrayIn[va]);
@@ -524,7 +539,7 @@ class Surface {
             }
           } // for(let va
         }
-        else {
+        else {         
             let  mesh = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
                 specular: ic.frac,
                 shininess: 20, //10, //30,
@@ -533,8 +548,9 @@ class Surface {
                 wireframe: wireframe,
                 opacity: opacity,
                 transparent: true,
+                depthWrite: (parseInt(10*opacity) != 10) ? false : true, // important to make the transparency work
                 side: THREE.DoubleSide
-                //depthTest: (ic.bTransparent) ? false : true
+                //depthTest: (ic.ic.transparentRenderOrder) ? false : true
             }));
 
             //http://www.html5gamedevs.com/topic/7288-threejs-transparency-bug-or-limitation-or-what/
@@ -555,7 +571,7 @@ class Surface {
                 ic.prevSurfaces.push(mesh);
             }
         }
-
+        
         // remove the reference
         ps = null;
         verts = null;

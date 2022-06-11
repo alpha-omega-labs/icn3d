@@ -58,7 +58,7 @@ class SaveFile {
             let height = $("#" + ic.pre + "canvas").height();
             ic.applyCenterCls.setWidthHeight(width, height);
 
-            if(ic.bRender) ic.drawCls.render();
+            if(ic.bRender) ic.drawCls.render_base();
 
             let bAddURL = true;
             if(!window.File || !window.FileReader || !window.FileList || !window.Blob) {
@@ -126,7 +126,7 @@ class SaveFile {
             ic.scaleFactor = 1.0;
             ic.applyCenterCls.setWidthHeight(width, height);
 
-            if(ic.bRender) ic.drawCls.render();
+            if(ic.bRender) ic.drawCls.render_base();
         }
         else if(type === 'html') {
             let dataStr = text;
@@ -747,6 +747,12 @@ class SaveFile {
             else if(me.cfg.chainalign !== undefined) {
                 let chainidArray = me.cfg.chainalign.split(',');
                 title = 'Dynamic Structure Alignment of Chain ' + chainidArray[0] + ' to Chain ' + chainidArray[1];
+
+                $("#" + ic.pre + "title").html(title);
+            }
+            else if(me.cfg.mmdbafid !== undefined) {
+                let structureArray = me.cfg.mmdbafid.split(',');
+                title = 'Multiple structures: ' + structureArray;
 
                 $("#" + ic.pre + "title").html(title);
             }

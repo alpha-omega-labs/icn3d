@@ -31,13 +31,9 @@ class Draw {
 
         ic.setColorCls.applyPrevColor();
 
-        if(ic.biomtMatrices !== undefined && ic.biomtMatrices.length > 1) {
-            // show bioassembly in two cases
-            // 1. asymmetric unit: me.cfg.bu == 0
-            // 2. biological unit with less than ic.maxatomcnt atom: 
-            // me.cfg.bu == 1 && Object.keys(ic.atoms).length * ic.biomtMatrices.length < ic.maxatomcnt
-            if(ic.bAssembly && Object.keys(ic.structures).length == 1 && (me.cfg.bu == 0 
-              || (me.cfg.bu == 1 && Object.keys(ic.atoms).length * ic.biomtMatrices.length > ic.maxatomcnt)) ) {
+        if(ic.biomtMatrices !== undefined && ic.biomtMatrices.length > 1) {        
+            if(ic.bAssembly && Object.keys(ic.structures).length == 1 && ((me.cfg.mmdbid === undefined && me.cfg.bu == 1)
+              || (me.cfg.mmdbid !== undefined && me.cfg.bu == 1 && Object.keys(ic.atoms).length * ic.biomtMatrices.length > ic.maxatomcnt)) ) {
                 ic.instancingCls.drawSymmetryMates();
             }
             else {
@@ -90,16 +86,24 @@ class Draw {
         }
         else {
             ic.controls.update(para);
-        }
+        }      
     }
 
     //Render the scene and objects into pixels.
     render() { let ic = this.icn3d, me = ic.icn3dui;
+        let thisClass = this;
+        // setAnimationLoop is required for VR
+        ic.renderer.setAnimationLoop( function() {
+            thisClass.render_base();
+        });
+    }
+
+    //Render the scene and objects into pixels.
+    render_base() { let ic = this.icn3d, me = ic.icn3dui;
         if(me.bNode) return;
 
         let cam = (ic.bControlGl && !me.bNode) ? window.cam : ic.cam;
 
-    //    if(ic.bShade) {
         if(ic.directionalLight) {
             let quaternion = new THREE.Quaternion();
             quaternion.setFromUnitVectors( new THREE.Vector3(0, 0, ic.cam_z).normalize(), cam.position.clone().normalize() );
@@ -108,20 +112,12 @@ class Draw {
             ic.directionalLight2.position.copy(ic.lightPos2.clone().applyQuaternion( quaternion ).normalize());
             ic.directionalLight3.position.copy(ic.lightPos3.clone().applyQuaternion( quaternion ).normalize());
         }
-    //    }
-    //    else {
-    //        ic.directionalLight.position.copy(cam.position);
-    //    }
-
-//        ic.renderer.gammaInput = true
-//        ic.renderer.gammaOutput = true
 
         ic.renderer.setPixelRatio( window.devicePixelRatio ); // r71
         if(ic.scene) {
             ic.renderer.render(ic.scene, cam);
         }
     }
-
 }
 
 export {Draw}

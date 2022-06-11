@@ -54,19 +54,31 @@ class ParserUtils {
                   if(!me.cfg.bSidebyside) me.htmlCls.dialogCls.openDlg('dl_rmsd', 'Realignment RMSD');
               }
 
+              let chainDone = {};
               for(let i = 0, il = ic.structures[secondStruct].length; i < il; ++i) {
                   let  chainidTmp = ic.structures[secondStruct][i];
+                  // some chains were pushed twice in some cases
+                  if(chainDone.hasOwnProperty(chainidTmp)) continue;
 
                   for(let j in ic.chains[chainidTmp]) {
                     let  atom = ic.atoms[j];
                     atom.coord = ic.surfaceCls.transformMemPro(atom.coord, rot, centerFrom, centerTo);
                   }
+
+                  chainDone[chainidTmp] = 1;
               }
 
               ic.bRealign = true;
 
-              if(!bKeepSeq) ic.setSeqAlignCls.setSeqAlignForRealign(chainid_t, chainid, chainIndex);
+              if(!bChainAlign) {
+                ic.opts['color'] = 'identity';
+                ic.setColorCls.setColorByOptions(ic.opts, ic.hAtoms);
+              }
 
+/*
+              //if(!bKeepSeq) ic.setSeqAlignCls.setSeqAlignForRealign(chainid_t, chainid, chainIndex);
+              ic.setSeqAlignCls.setSeqAlignForRealign(chainid_t, chainid, chainIndex);
+         
               let  bShowHighlight = false;
               let  seqObj = me.htmlCls.alignSeqCls.getAlignSequencesAnnotations(Object.keys(ic.alnChains), undefined, undefined, bShowHighlight);
 
@@ -75,19 +87,54 @@ class ParserUtils {
               $("#" + ic.pre + "dl_sequence2").width(me.htmlCls.RESIDUE_WIDTH * seqObj.maxSeqCnt + 200);
 
               me.htmlCls.dialogCls.openDlg('dl_alignment', 'Select residues in aligned sequences');
+*/
+              // assign ic.qt_start_end
+              if(!ic.qt_start_end) ic.qt_start_end = [];
 
-              if(!bChainAlign) {
-                  ic.opts['color'] = 'identity';
-                  ic.setColorCls.setColorByOptions(ic.opts, ic.hAtoms);
-              }
-
-              //ic.drawCls.draw();
+              let curr_qt_start_end = this.getQtStartEndFromRealignResid(chainid_t, chainid);
+              ic.qt_start_end.push(curr_qt_start_end);
 
               hAtoms = ic.hAtoms;
           }
       }
 
       return hAtoms;
+    }
+
+    getQtStartEndFromRealignResid(chainid_t, chainid_q) { let  ic = this.icn3d, me = ic.icn3dui;
+        let  struct_t = chainid_t.substr(0, chainid_t.indexOf('_')); 
+        let  struct_q = chainid_q.substr(0, chainid_q.indexOf('_')); 
+
+        let qt_start_end = [];
+
+        let resi2pos_t = {};
+        for(let i = 0, il = ic.chainsSeq[chainid_t].length; i < il; ++i) {
+            let resi = ic.chainsSeq[chainid_t][i].resi;
+            resi2pos_t[resi] = i + 1;
+        }
+
+        let resi2pos_q = {};
+        for(let i = 0, il = ic.chainsSeq[chainid_q].length; i < il; ++i) {
+            let resi = ic.chainsSeq[chainid_q][i].resi;
+            resi2pos_q[resi] = i + 1;
+        }
+
+        for(let i = 0, il = ic.realignResid[struct_t].length; i < il; ++i) {
+            let resid_t = ic.realignResid[struct_t][i].resid;
+            let pos_t = resid_t.lastIndexOf('_');
+            let resi_t = parseInt(resid_t.substr(pos_t + 1));
+
+            let resid_q = ic.realignResid[struct_q][i].resid;
+            let pos_q = resid_q.lastIndexOf('_');
+            let resi_q = parseInt(resid_q.substr(pos_q + 1));
+
+            let resiPos_t = resi2pos_t[resi_t];
+            let resiPos_q = resi2pos_q[resi_q];
+
+            qt_start_end.push({"q_start": resiPos_q, "q_end": resiPos_q, "t_start": resiPos_t, "t_end": resiPos_t}); 
+        }
+
+        return qt_start_end;
     }
 
     getMissingResidues(seqArray, type, chainid) { let  ic = this.icn3d, me = ic.icn3dui;
@@ -128,7 +175,7 @@ class ParserUtils {
                 seqName = 'x';
             }
 
-            let  resObject = {}
+            let  resObject = {};
 
             if(!ic.bUsePdbNum) {
                 resObject.resi = i + 1;
@@ -465,7 +512,7 @@ class ParserUtils {
 
       //var dxymax = npoint / 2.0 * step;
 
-      pdbid =(pdbid) ? pdbid.toUpperCase() : 'stru';
+      pdbid =(pdbid) ? pdbid.toUpperCase() : 'STRU';
 
       ic.structures[pdbid].push(pdbid + '_MEM');
       ic.chains[pdbid + '_MEM'] = {}
@@ -591,7 +638,7 @@ class ParserUtils {
               me.cfg.command = me.cfg.command.replace(new RegExp('!','g'), id + '_');
           }
           // final step resolved ic.deferred
-          ic.loadScriptCls.loadScript(me.cfg.command);
+          if(me.cfg.mmdbafid === undefined) ic.loadScriptCls.loadScript(me.cfg.command);
       }
       else {
           if(me.deferred !== undefined) me.deferred.resolve(); if(ic.deferred2 !== undefined) ic.deferred2.resolve();
@@ -599,11 +646,11 @@ class ParserUtils {
       //if(me.cfg.align !== undefined || me.cfg.chainalign !== undefined || ic.bRealign ||( ic.bInputfile && ic.InputfileType == 'pdb' && Object.keys(ic.structures).length >= 2) ) {
       if(Object.keys(ic.structures).length >= 2) {
           $("#" + ic.pre + "mn2_alternateWrap").show();
-          $("#" + ic.pre + "mn2_realignWrap").show();
+          //$("#" + ic.pre + "mn2_realignWrap").show();
       }
       else {
           $("#" + ic.pre + "mn2_alternateWrap").hide();
-          $("#" + ic.pre + "mn2_realignWrap").hide();
+          //$("#" + ic.pre + "mn2_realignWrap").hide();
       }
       // display the structure right away. load the mns and sequences later
       setTimeout(function(){

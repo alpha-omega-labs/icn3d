@@ -98,6 +98,7 @@ import {AnnoDomain} from './icn3d/annotations/annoDomain.js';
 import {AnnoSnpClinVar} from './icn3d/annotations/annoSnpClinVar.js';
 import {AnnoSsbond} from './icn3d/annotations/annoSsbond.js';
 import {AnnoTransMem} from './icn3d/annotations/annoTransMem.js';
+import {Domain3d} from './icn3d/annotations/domain3d.js';
 
 import {AddTrack} from './icn3d/annotations/addTrack.js';
 import {Annotation} from './icn3d/annotations/annotation.js';
@@ -163,6 +164,8 @@ import {Ray} from './icn3d/picking/ray.js';
 import {Control} from './icn3d/picking/control.js';
 import {Picking} from './icn3d/picking/picking.js';
 
+import {VRButton} from "./thirdparty/three/vr/VRButton.js";
+
 class iCn3DUI {
   constructor(cfg) {
     //A hash containing all input parameters.
@@ -171,7 +174,7 @@ class iCn3DUI {
     //even when multiple iCn3D viewers are shown together.
     this.pre = this.cfg.divid + "_";
 
-    this.REVISION = '3.8.2';
+    this.REVISION = '3.12.2';
 
     // In nodejs, iCn3D defines "window = {navigator: {}}"
     this.bNode = (Object.keys(window).length < 2) ? true : false;
@@ -214,7 +217,7 @@ class iCn3DUI {
 }
 
 // show3DStructure is the main function to show 3D structure
-iCn3DUI.prototype.show3DStructure = function() { let me = this;
+iCn3DUI.prototype.show3DStructure = function(pdbStr) { let me = this;
   let thisClass = this;
   me.deferred = $.Deferred(function() {
     if(me.cfg.menuicon) {
@@ -329,14 +332,56 @@ iCn3DUI.prototype.show3DStructure = function() { let me = this;
         let id = loadCommand.substr(loadCommand.lastIndexOf(' ') + 1);
         // reload only if viewing the same structure
         if(id === me.cfg.mmtfid || id === me.cfg.pdbid || id === me.cfg.opmid || id === me.cfg.mmdbid || id === me.cfg.gi  || id === me.cfg.blast_rep_id
-          || id === me.cfg.cid || id === me.cfg.mmcifid || id === me.cfg.align || id === me.cfg.chainalign) {
+          || id === me.cfg.cid || id === me.cfg.mmcifid || id === me.cfg.align || id === me.cfg.chainalign || id === me.cfg.mmdbafid) {
             ic.loadScriptCls.loadScript(ic.commandsBeforeCrash, true);
             return;
         }
     }
     ic.molTitle = '';
     ic.loadCmd;
-    if(me.cfg.url !== undefined) {
+
+    if(pdbStr) { // input pdbStr
+        ic.init();
+        ic.pdbParserCls.loadPdbData(pdbStr);
+
+        if(me.cfg.resdef !== undefined && me.cfg.chains !== undefined) {
+            let structureArray = Object.keys(ic.structures);
+            let chainArray = me.cfg.chains.split(' | ');
+            let chainidArray = [];
+            if(structureArray.length == chainArray.length) {
+                for(let i = 0, il = structureArray.length; i  < il; ++i) {
+                    chainidArray.push(structureArray[i] + '_' + chainArray[i]);
+                }
+                
+                let bRealign = true, bPredefined = true;
+                ic.realignParserCls.realignChainOnSeqAlign(undefined, chainidArray, bRealign, bPredefined);
+            }
+        }
+        else if(me.cfg.resdef !== undefined && me.cfg.matchedchains !== undefined) {
+            let stru_t = Object.keys(ic.structures)[0];
+            let chain_t = stru_t + '_' + me.cfg.masterchain;
+            let chainidArray = me.cfg.matchedchains.split(',');
+            let mmdbafid = '';
+            for(let i = 0, il = chainidArray.length; i < il; ++i) {
+                if(i > 0) mmdbafid += ',';
+                mmdbafid += chainidArray[i].substr(0, chainidArray[i].indexOf('_'));
+            }
+
+            // load multiple PDBs
+            ic.bNCBI = true;
+            ic.bMmdbafid = true;
+            
+            ic.loadCmd = 'load mmdbaf0 ' + mmdbafid;
+            me.htmlCls.clickMenuCls.setLogCmd(ic.loadCmd, true);
+
+            let bQuery = true;
+            ic.chainalignParserCls.downloadMmdbAf(mmdbafid, bQuery);
+
+            // realign
+            ic.chainidArray = [chain_t].concat(chainidArray);
+        }
+    }
+    else if(me.cfg.url !== undefined) {
         ic.bInputUrlfile = true;
 
         let type_url = me.cfg.url.split('|');
@@ -418,7 +463,7 @@ iCn3DUI.prototype.show3DStructure = function() { let me = this;
               url: url,
               dataType: 'json',
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               success: function(data) {
                 for(let q = 0, ql = data.BlastOutput2.length; q < ql; ++q) {
                   if(data.BlastOutput2[q].report.results.search.query_id != me.cfg.query_id) continue;
@@ -474,7 +519,7 @@ iCn3DUI.prototype.show3DStructure = function() { let me = this;
           url: url,
           dataType: 'jsonp',
           tryCount : 0,
-          retryLimit : 1,
+          retryLimit : 0, //1
           success: function(data) {
               if(data.InformationList !== undefined && data.InformationList.Information !== undefined) ic.molTitle = data.InformationList.Information[0].Title;
           },
@@ -520,6 +565,23 @@ iCn3DUI.prototype.show3DStructure = function() { let me = this;
         ic.loadCmd = 'load chainalignment ' + me.cfg.chainalign + ' | resnum ' + me.cfg.resnum + ' | resdef ' + me.cfg.resdef + ' | parameters ' + me.cfg.inpara;
         me.htmlCls.clickMenuCls.setLogCmd(ic.loadCmd, true);
         ic.chainalignParserCls.downloadChainalignment(me.cfg.chainalign, me.cfg.resnum, me.cfg.resdef);
+    }
+    else if(me.cfg.mmdbafid !== undefined) {
+        ic.bNCBI = true;
+
+        ic.bMmdbafid = true;
+        ic.inputid = me.cfg.mmdbafid;
+        if(me.cfg.bu == 1) {
+            ic.loadCmd = 'load mmdbaf1 ' + me.cfg.mmdbafid + ' | parameters ' + me.cfg.inpara;
+        }
+        else {
+            ic.loadCmd = 'load mmdbaf0 ' + me.cfg.mmdbafid + ' | parameters ' + me.cfg.inpara;
+        }
+        me.htmlCls.clickMenuCls.setLogCmd(ic.loadCmd, true);
+
+        $.when(ic.chainalignParserCls.downloadMmdbAf(me.cfg.mmdbafid)).then(function() {
+            ic.loadScriptCls.loadScript(me.cfg.command);
+        });
     }
     else if(me.cfg.command !== undefined && me.cfg.command !== '') {
         if(me.cfg.command.indexOf('url=') !== -1) ic.bInputUrlfile = true;
@@ -648,4 +710,4 @@ class printMsg {
 
 //export {iCn3DUI, printMsg}
 
-export {iCn3DUI, printMsg, HashUtilsCls, UtilsCls, ParasCls, MyEventCls, RmsdSuprCls, SubdivideCls, ConvertTypeCls, Html, iCn3D, ClickMenu, SetMenu, Dialog, SetDialog, Events, AlignSeq, SetHtml, Scene, Camera, Fog, Box, Brick, CurveStripArrow, Curve, Cylinder, Line, ReprSub, Sphere, Stick, Strand, Strip, Tube, CartoonNucl, Label, Axes, Glycan, Surface, ElectronMap, MarchingCube, ProteinSurface, ApplyCenter, ApplyClbonds, ApplyDisplay, ApplyOther, ApplySsbonds, ApplySymd, ApplyMap, ResidueLabels, Impostor, Instancing, Alternate, Draw, Contact, HBond, PiHalogen, Saltbridge, SetStyle, SetColor, SetOption, AnnoCddSite, AnnoContact, AnnoCrossLink, AnnoDomain, AnnoSnpClinVar, AnnoSsbond, AnnoTransMem, AddTrack, Annotation, ShowAnno, ShowSeq, HlSeq, HlUpdate, HlObjects, LineGraph, GetGraph, ShowInter, ViewInterPairs, DrawGraph, AlignParser, ChainalignParser, Dsn6Parser, MmcifParser, MmdbParser, MmtfParser, Mol2Parser, OpmParser, PdbParser, SdfParser, XyzParser, RealignParser, DensityCifParser, ParserUtils, LoadAtomData, SetSeqAlign, LoadPDB, ApplyCommand, DefinedSets, LoadScript, SelectByCommand, Selection, Resid2spec, FirstAtomObj, Delphi, Dssp, Scap, Symd, AlignSW, Analysis, Diagram2d, ResizeCanvas, Transform, SaveFile, ShareLink, ThreeDPrint, Export3D, Ray, Control, Picking}
+export {iCn3DUI, printMsg, HashUtilsCls, UtilsCls, ParasCls, MyEventCls, RmsdSuprCls, SubdivideCls, ConvertTypeCls, Html, iCn3D, ClickMenu, SetMenu, Dialog, SetDialog, Events, AlignSeq, SetHtml, Scene, Camera, Fog, Box, Brick, CurveStripArrow, Curve, Cylinder, Line, ReprSub, Sphere, Stick, Strand, Strip, Tube, CartoonNucl, Label, Axes, Glycan, Surface, ElectronMap, MarchingCube, ProteinSurface, ApplyCenter, ApplyClbonds, ApplyDisplay, ApplyOther, ApplySsbonds, ApplySymd, ApplyMap, ResidueLabels, Impostor, Instancing, Alternate, Draw, Contact, HBond, PiHalogen, Saltbridge, SetStyle, SetColor, SetOption, AnnoCddSite, AnnoContact, AnnoCrossLink, AnnoDomain, AnnoSnpClinVar, AnnoSsbond, AnnoTransMem, Domain3d, AddTrack, Annotation, ShowAnno, ShowSeq, HlSeq, HlUpdate, HlObjects, LineGraph, GetGraph, ShowInter, ViewInterPairs, DrawGraph, AlignParser, ChainalignParser, Dsn6Parser, MmcifParser, MmdbParser, MmtfParser, Mol2Parser, OpmParser, PdbParser, SdfParser, XyzParser, RealignParser, DensityCifParser, ParserUtils, LoadAtomData, SetSeqAlign, LoadPDB, ApplyCommand, DefinedSets, LoadScript, SelectByCommand, Selection, Resid2spec, FirstAtomObj, Delphi, Dssp, Scap, Symd, AlignSW, Analysis, Diagram2d, ResizeCanvas, Transform, SaveFile, ShareLink, ThreeDPrint, Export3D, Ray, Control, Picking, VRButton}

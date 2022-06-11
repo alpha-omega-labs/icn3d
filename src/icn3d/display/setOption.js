@@ -90,6 +90,19 @@ class SetOption {
           case 'proteins':
               atoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.proteins);
               if(Object.keys(ic.hAtoms).length < Object.keys(ic.proteins).length) bAll = false;
+
+              // remove disulfide bonds
+              if(style == 'nothing') {
+                ic.opts["ssbonds"] = "no";
+                ic.lines['ssbond'] = [];
+                for(let i in atoms) {
+                    ic.atoms[i].style2 = 'nothing';
+                }
+              }
+              else {
+                ic.opts["ssbonds"] = "yes";
+              }
+
               break;
           case 'sidec':
               atoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.sidec);
@@ -100,6 +113,9 @@ class SetOption {
           case 'nucleotides':
               atoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.nucleotides);
               if(Object.keys(ic.hAtoms).length < Object.keys(ic.nucleotides).length) bAll = false;
+              break;
+          case 'ntbase':
+              atoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.ntbase);
               break;
           case 'chemicals':
               atoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.chemicals);
@@ -112,7 +128,7 @@ class SetOption {
               break;
       }
       // draw sidec separatedly
-      if(selectionType === 'sidec') {
+      if(selectionType === 'sidec' || selectionType === 'ntbase') {
           for(let i in atoms) {
             ic.atoms[i].style2 = style;
           }
@@ -164,10 +180,12 @@ class SetOption {
            let atom = ic.atoms[i];
            if(atom.colorSave !== undefined) {
                atom.color = atom.colorSave.clone();
+               ic.atomPrevColors[i] = atom.color;
            }
        }
-       ic.drawCls.draw();
+       
        ic.hlUpdateCls.changeSeqColor(Object.keys(ic.residues));
+       ic.drawCls.draw();
     }
 }
 

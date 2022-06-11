@@ -44,7 +44,7 @@ class LoadScript {
 
       ic.bRender = false;
       ic.bStopRotate = true;
-
+      
       // firebase dynamic links replace " " with "+". So convert it back
       dataStr =(bStatefile) ? dataStr.replace(/\+/g, ' ') : dataStr.replace(/\+/g, ' ').replace(/;/g, '\n');
 
@@ -275,9 +275,10 @@ class LoadScript {
               let  strArray = ic.commands[i].split("|||");
 
               if(Object.keys(ic.proteins).length > 0 && ic.mmdb_data === undefined &&(ic.bAjax3ddomain === undefined || !ic.bAjax3ddomain)) {
-                  $.when(thisClass.applyCommand3ddomain(strArray[0].trim())).then(function() {
-                      thisClass.execCommandsBase(i + 1, end, steps);
-                  });
+                  //$.when(thisClass.applyCommand3ddomain(strArray[0].trim())).then(function() {
+                    thisClass.applyCommand3ddomain(strArray[0].trim());    
+                    thisClass.execCommandsBase(i + 1, end, steps);
+                  //});
               }
               else {
                   if(Object.keys(ic.proteins).length > 0) {
@@ -299,8 +300,9 @@ class LoadScript {
                 &&(ic.bAjax3ddomain === undefined || !ic.bAjax3ddomain || ic.mmdb_data === undefined) ) {
                   $.when(thisClass.applyCommandClinvar(strArray[0].trim()))
                     .then(thisClass.applyCommandSnp(strArray[0].trim()))
-                    .then(thisClass.applyCommand3ddomain(strArray[0].trim()))
+                    //.then(thisClass.applyCommand3ddomain(strArray[0].trim()))
                     .then(function() {
+                      thisClass.applyCommand3ddomain(strArray[0].trim());
                       ic.annotationCls.setAnnoTabAll();
 
                       thisClass.execCommandsBase(i + 1, end, steps);
@@ -319,8 +321,9 @@ class LoadScript {
               else if(Object.keys(ic.proteins).length > 0 &&(ic.bAjaxClinvar === undefined || !ic.bAjaxClinvar)
                 &&(ic.bAjax3ddomain === undefined || !ic.bAjax3ddomain || ic.mmdb_data === undefined)) {
                   $.when(thisClass.applyCommandClinvar(strArray[0].trim()))
-                    .then(thisClass.applyCommand3ddomain(strArray[0].trim()))
+                    //.then(thisClass.applyCommand3ddomain(strArray[0].trim()))
                     .then(function() {
+                      thisClass.applyCommand3ddomain(strArray[0].trim());
                       ic.annotationCls.setAnnoTabAll();
 
                       thisClass.execCommandsBase(i + 1, end, steps);
@@ -328,10 +331,11 @@ class LoadScript {
               }
               else if(Object.keys(ic.proteins).length > 0 &&(ic.bAjax3ddomain === undefined || !ic.bAjax3ddomain || ic.mmdb_data === undefined)
                 &&(ic.bAjaxSnp === undefined || !ic.bAjaxSnp)) {
-                  $.when(thisClass.applyCommand3ddomain(strArray[0].trim()))
-                    .then(thisClass.applyCommandSnp(strArray[0].trim()))
+                  //$.when(thisClass.applyCommand3ddomain(strArray[0].trim()))
+                  $.when(thisClass.applyCommandSnp(strArray[0].trim()))
                     .then(function() {
-                      ic.annotationCls.setAnnoTabAll();
+                        thisClass.applyCommand3ddomain(strArray[0].trim());
+                        ic.annotationCls.setAnnoTabAll();
 
                       thisClass.execCommandsBase(i + 1, end, steps);
                   });
@@ -353,12 +357,14 @@ class LoadScript {
                   });
               }
               else if(Object.keys(ic.proteins).length > 0 &&(ic.bAjax3ddomain === undefined || !ic.bAjax3ddomain || ic.mmdb_data === undefined) ) {
-                  $.when(thisClass.applyCommand3ddomain(strArray[0].trim()))
-                    .then(function() {
+                  //$.when(thisClass.applyCommand3ddomain(strArray[0].trim()))
+                  // .then(function() {
+                      thisClass.applyCommand3ddomain(strArray[0].trim());
+
                       ic.annotationCls.setAnnoTabAll();
 
                       thisClass.execCommandsBase(i + 1, end, steps);
-                  });
+                  //});
               }
               else {
                   if(Object.keys(ic.proteins).length > 0) {
@@ -480,6 +486,22 @@ class LoadScript {
             }
 
             $.when(thisClass.applyCommandRealign(command)).then(function() {
+               thisClass.execCommandsBase(i + 1, end, steps);
+            });
+
+            return;
+          }
+          else if(ic.commands[i].trim().indexOf('realign on structure align') == 0) {
+            let  strArray = ic.commands[i].split("|||");
+            let  command = strArray[0].trim();
+
+            let  paraArray = command.split(' | ');
+            if(paraArray.length == 2) {
+                let  nameArray = paraArray[1].split(',');
+                ic.hAtoms = ic.definedSetsCls.getAtomsFromNameArray(nameArray);
+            }
+
+            $.when(thisClass.applyCommandRealignByStruct(command)).then(function() {
                thisClass.execCommandsBase(i + 1, end, steps);
             });
 
@@ -625,12 +647,13 @@ class LoadScript {
                         thisClass.applyCommand3ddomain(lastCommand);
                     }
                     else if(lastCommand.indexOf('set annotation all') == 0) {
-                        //$.when(thisClass.applyCommandAnnotationsAndCddSite(lastCommand))
-                        //    .then(thisClass.applyCommandSnpClinvar(lastCommand))
                         $.when(thisClass.applyCommandClinvar(lastCommand))
                             .then(thisClass.applyCommandSnp(lastCommand))
-                            .then(thisClass.applyCommand3ddomain(lastCommand));
-                        ic.annotationCls.setAnnoTabAll();
+                            //.then(thisClass.applyCommand3ddomain(lastCommand));
+                            .then(function() {
+                                thisClass.applyCommand3ddomain(lastCommand);
+                                ic.annotationCls.setAnnoTabAll();
+                            });
                     }
                     else if(lastCommand.indexOf('view interactions') == 0 && me.cfg.align !== undefined) {
                         thisClass.applyCommandViewinteraction(lastCommand);
@@ -663,6 +686,14 @@ class LoadScript {
                             ic.hAtoms = ic.definedSetsCls.getAtomsFromNameArray(nameArray);
                         }
                         thisClass.applyCommandRealign(lastCommand);
+                    }
+                    else if(lastCommand.indexOf('realign on structure align') == 0) {
+                        let  paraArray = lastCommand.split(' | ');
+                        if(paraArray.length == 2) {
+                            let  nameArray = paraArray[1].split(',');
+                            ic.hAtoms = ic.definedSetsCls.getAtomsFromNameArray(nameArray);
+                        }
+                        thisClass.applyCommandRealignByStruct(lastCommand);
                     }
                     else if(lastCommand.indexOf('graph interaction pairs') == 0) {
                         thisClass.applyCommandGraphinteraction(lastCommand);
@@ -747,6 +778,18 @@ class LoadScript {
             me.cfg.bu = 0;
   
             ic.mmdbParserCls.downloadMmdb(id);
+        }
+        else if(command.indexOf('load mmdbaf1') !== -1) {
+            me.cfg.mmdbafid = id;
+            me.cfg.bu = 1;
+  
+            ic.mmdbParserCls.downloadMmdbAf(id);
+        }
+        else if(command.indexOf('load mmdbaf0') !== -1) {
+            me.cfg.mmdbafid = id;
+            me.cfg.bu = 0;
+
+            ic.mmdbParserCls.downloadMmdbAf(id);
         }
         else if(command.indexOf('load gi') !== -1) {
           me.cfg.gi = id;
@@ -875,6 +918,21 @@ class LoadScript {
       }); // end of me.deferred = $.Deferred(function() {
 
       return ic.deferredRealign.promise();
+    }
+
+    applyCommandRealignByStructBase(command) { let  ic = this.icn3d, me = ic.icn3dui;
+        ic.realignParserCls.realignOnStructAlign();
+    }
+
+    applyCommandRealignByStruct(command) { let  ic = this.icn3d, me = ic.icn3dui;
+      let  thisClass = this;
+
+      // chain functions together
+      ic.deferredRealignByStruct = new $.Deferred(function() {
+         thisClass.applyCommandRealignByStructBase(command);
+      }); // end of me.deferred = $.Deferred(function() {
+
+      return ic.deferredRealignByStruct.promise();
     }
 
     applyCommandAfmapBase(command, bFull) { let  ic = this.icn3d, me = ic.icn3dui;
@@ -1023,11 +1081,11 @@ class LoadScript {
       let  thisClass = this;
 
       // chain functions together
-      ic.deferred3ddomain = $.Deferred(function() {
+      //ic.deferred3ddomain = $.Deferred(function() {
           thisClass.applyCommand3ddomainBase(command);
-      }); // end of me.deferred = $.Deferred(function() {
+      //}); // end of me.deferred = $.Deferred(function() {
 
-      return ic.deferred3ddomain.promise();
+      //return ic.deferred3ddomain.promise();
     }
 
     applyCommandViewinteractionBase(command) { let  ic = this.icn3d, me = ic.icn3dui;
@@ -1167,6 +1225,8 @@ class LoadScript {
 
           $("#" + ic.pre + "replay_cmd").html('Cmd: ' + cmdStr);
           $("#" + ic.pre + "replay_menu").html('Menu: ' + menuStr);
+
+          me.htmlCls.clickMenuCls.setLogCmd(cmdStrOri, true);
 
           ic.bCommandLoad = false;
 

@@ -48,7 +48,7 @@ class AddTrack {
               dataType: 'jsonp',
               //dataType: 'json',
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               success: function(data) {
                   thisClass.alignSequenceToStructure(chainid, data, title);
               },
@@ -85,7 +85,7 @@ class AddTrack {
               dataType: 'jsonp',
               //dataType: 'json',
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               success: function(data) {
                   thisClass.alignSequenceToStructure(chainid, data, title);
               },
@@ -997,7 +997,9 @@ class AddTrack {
 
                 let legendHtml = me.htmlCls.clickMenuCls.setLegendHtml();
 
-                $("#" + me.pre + "legend").html(legendHtml);
+                //$("#" + me.pre + "legend").html(legendHtml);
+                $("#" + me.pre + "dl_legend").html(legendHtml);
+                me.htmlCls.dialogCls.openDlg('dl_legend', 'Color range');
             }
             else if(type == 'tube') {
                 ic.setOptionCls.setStyle('proteins', 'custom tube');

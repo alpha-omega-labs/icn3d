@@ -21,6 +21,7 @@ class AnnoDomain {
         // show 3D domains
         let pdbid = pdbArray[index];
         let url = me.htmlCls.baseUrl + "mmdb/mmdb_strview.cgi?v=2&program=icn3d&domain&molinfor&uid=" + pdbid;
+
         if(index == 0 && ic.mmdb_data !== undefined) {
             for(let chnid in ic.protein_chainid) {
                 if(chnid.indexOf(pdbid) !== -1) {
@@ -35,70 +36,49 @@ class AnnoDomain {
                 }
             }
         }
-        else {
-            $.ajax({
-              url: url,
-              dataType: 'json',
-              cache: true,
-              tryCount : 0,
-              retryLimit : 1,
-              success: function(data) {
-                ic.mmdb_dataArray[index] = data;
-                for(let chnid in ic.protein_chainid) {
-                    if(chnid.indexOf(pdbid) !== -1) {
-                        thisClass.showDomainWithData(chnid, ic.mmdb_dataArray[index]);
-                    }
-                }
-                // add here after the ajax call
-                ic.showAnnoCls.enableHlSeq();
-                ic.bAjax3ddomain = true;
-                ic.bAjaxDoneArray[index] = true;
-                if(ic.deferred3ddomain !== undefined) {
-                    if(me.cfg.align === undefined || me.cfg.chainalign === undefined || ic.bRealign) {
-                        ic.deferred3ddomain.resolve();
-                    }
-                    else {
-                        let bAjaxDoneAll = true;
-                        for(let i = 0, il = pdbArray.length; i < il; ++i) {
-                            bAjaxDoneAll = bAjaxDoneAll && ic.bAjaxDoneArray[i];
+        else {                  
+            // calculate 3D domains on-the-fly
+            //ic.protein_chainid[chainArray[i]] 
+            let data = {};
+            data.domains = {};
+            for(let chainid in ic.chains) {
+                let structure = chainid.substr(0, chainid.indexOf('_'));
+                if(pdbid == structure && ic.protein_chainid.hasOwnProperty(chainid)) {
+                    data.domains[chainid] = {};
+                    data.domains[chainid].domains = [];
+
+                    let atoms = ic.chains[chainid];
+
+                    let result = ic.domain3dCls.c2b_NewSplitChain(atoms);
+                    let subdomains = result.subdomains;
+                    //let substruct = result.substruct;
+
+                    //let jsonStr = ic.domain3dCls.getDomainJsonForAlign(atoms);
+            
+                    for(let i = 0, il = subdomains.length; i < il; ++i) {
+                        // domain item: {"sdid":1722375,"intervals":[[1,104],[269,323]]}
+                        let domain = {};
+                        domain.intervals = [];
+
+                        for(let j = 0, jl = subdomains[i].length; j < jl; j += 2) {
+                            domain.intervals.push([subdomains[i][j], subdomains[i][j+1]]);
                         }
-                        if(bAjaxDoneAll) ic.deferred3ddomain.resolve();
+
+                        data.domains[chainid].domains.push(domain);
                     }
                 }
-              },
-              error : function(xhr, textStatus, errorThrown ) {
-                this.tryCount++;
-                if(this.tryCount <= this.retryLimit) {
-                    //try again
-                    $.ajax(this);
-                    return;
+            }
+
+            ic.mmdb_dataArray[index] = data;
+            let bCalcDirect = true;
+            for(let chnid in ic.protein_chainid) {
+                if(chnid.indexOf(pdbid) !== -1) {
+                    thisClass.showDomainWithData(chnid, ic.mmdb_dataArray[index], bCalcDirect);
                 }
-                console.log( "No 3D domain data were found for the protein " + pdbid + "..." );
-                for(let chnid in ic.protein_chainid) {
-                    if(chnid.indexOf(pdbid) !== -1) {
-                        $("#" + ic.pre + "dt_domain_" + chnid).html('');
-                        $("#" + ic.pre + "ov_domain_" + chnid).html('');
-                        $("#" + ic.pre + "tt_domain_" + chnid).html('');
-                    }
-                }
-                ic.showAnnoCls.enableHlSeq();
-                ic.bAjax3ddomain = true;
-                //bAjaxDone1 = true;
-                if(ic.deferred3ddomain !== undefined) {
-                    if(me.cfg.align === undefined || me.cfg.chainalign === undefined) {
-                        ic.deferred3ddomain.resolve();
-                    }
-                    else {
-                        let bAjaxDoneAll = true;
-                        for(let i = 0, il = pdbArray.length; i < il; ++i) {
-                            bAjaxDoneAll = bAjaxDoneAll && ic.bAjaxDoneArray[i];
-                        }
-                        if(bAjaxDoneAll) ic.deferred3ddomain.resolve();
-                    }
-                }
-                return;
-              }
-            });
+            }
+
+            ic.bAjax3ddomain = true;
+            ic.bAjaxDoneArray[index] = true;          
         }
     }
 
@@ -117,28 +97,36 @@ class AnnoDomain {
             this.showDomainPerStructure(i);
         }
     }
-    showDomainWithData(chnid, data) { let ic = this.icn3d, me = ic.icn3dui;
+    showDomainWithData(chnid, data, bCalcDirect) { let ic = this.icn3d, me = ic.icn3dui;
         let html = '<div id="' + ic.pre + chnid + '_domainseq_sequence" class="icn3d-dl_sequence">';
         let html2 = html;
         let html3 = html;
         let domainArray, proteinname;
         let pos = chnid.indexOf('_');
         let chain = chnid.substr(pos + 1);
-        let molinfo = data.moleculeInfor;
-        let currMolid;
-        for(let molid in molinfo) {
-        if(molinfo[molid].chain === chain) {
-          currMolid = molid;
-          proteinname = molinfo[molid].name;
-          break;
+
+        if(bCalcDirect) {
+            proteinname = chnid;
+            domainArray = (data.domains[chnid]) ? data.domains[chnid].domains : [];
         }
+        else {
+            let molinfo = data.moleculeInfor;
+            let currMolid;
+            for(let molid in molinfo) {
+                if(molinfo[molid].chain === chain) {
+                currMolid = molid;
+                proteinname = molinfo[molid].name;
+                break;
+                }
+            }
+            if(currMolid !== undefined && data.domains[currMolid] !== undefined) {
+                domainArray = data.domains[currMolid].domains;
+            }
+            if(domainArray === undefined) {
+                domainArray = [];
+            }
         }
-        if(currMolid !== undefined && data.domains[currMolid] !== undefined) {
-          domainArray = data.domains[currMolid].domains;
-        }
-        if(domainArray === undefined) {
-          domainArray = [];
-        }
+
         for(let index = 0, indexl = domainArray.length; index < indexl; ++index) {
             //var fulltitle = '3D domain ' +(index+1).toString() + ' of ' + proteinname + '(PDB ID: ' + data.pdbId + ')';
             let fulltitle = '3D domain ' +(index+1).toString() + ' of ' + proteinname;
@@ -161,7 +149,7 @@ class AnnoDomain {
                 }
 
                 // use the NCBI residue number, and convert to PDB residue number during selection
-                if(ic.bNCBI) {
+                if(ic.bNCBI || bCalcDirect) {
                     fromArray.push(domainFrom);
                     toArray.push(domainTo);
                 }

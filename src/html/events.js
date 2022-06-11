@@ -77,9 +77,56 @@ class Events {
        me.htmlCls.clickMenuCls.setLogCmd('select ' + select + ' | name ' + commandname, true);
     }
 
+    readFile(bAppend, files, index, dataStrAll) { let me = this.icn3dui, ic = me.icn3d;
+        let thisClass = this;
+
+        let file = files[index];
+        let commandName = (bAppend) ? 'append': 'load';
+        
+        let reader = new FileReader();
+        reader.onload = function(e) {
+            //++ic.loadedFileCnt;
+
+            let dataStr = e.target.result; // or = reader.result;
+            //me.htmlCls.clickMenuCls.setLogCmd(commandName + ' pdb file ' + $("#" + me.pre + fileId).val(), false);
+            me.htmlCls.clickMenuCls.setLogCmd(commandName + ' pdb file ' + file.name, false);
+
+            if(!bAppend) {
+                ic.init();
+            }
+            else {
+                ic.resetConfig();
+                //ic.hAtoms = {};
+                //ic.dAtoms = {};
+                ic.bResetAnno = true;
+                ic.bResetSets = true;
+            }
+
+            ic.bInputfile = true;
+            ic.InputfileType = 'pdb';
+            ic.InputfileData = (ic.InputfileData) ? ic.InputfileData + '\nENDMDL\n' + dataStr : dataStr;
+
+            dataStrAll = (index > 0) ? dataStrAll + '\nENDMDL\n' + dataStr : dataStr;
+
+            if(Object.keys(files).length == index + 1) {
+                if(bAppend) {
+                    ic.hAtoms = {};
+                    ic.dAtoms = {};
+                }
+                ic.pdbParserCls.loadPdbData(dataStrAll, undefined, undefined, bAppend);
+            }
+            else {
+                thisClass.readFile(bAppend, files, index + 1, dataStrAll);
+            }
+        }
+
+        if (typeof file === "object") {
+            reader.readAsText(file);
+        }
+    }
+
     loadPdbFile(bAppend) { let me = this.icn3dui, ic = me.icn3d;
        let fileId = (bAppend) ? 'pdbfile_app' : 'pdbfile';
-       let commandName = (bAppend) ? 'append': 'load';
 
        //me = ic.setIcn3dui(this.id);
        ic.bInitial = true;
@@ -91,41 +138,38 @@ class Events {
        else {
            ic.resizeCanvasCls.closeDialogs();
        }
-       let file = $("#" + me.pre + fileId)[0].files[0];
-       if(!file) {
+       let files = $("#" + me.pre + fileId)[0].files;
+       if(!files[0]) {
          alert("Please select a file before clicking 'Load'");
        }
        else {
-         me.htmlCls.setHtmlCls.fileSupport();
-         let reader = new FileReader();
-         reader.onload = function(e) {
-           let dataStr = e.target.result; // or = reader.result;
-           me.htmlCls.clickMenuCls.setLogCmd(commandName + ' pdb file ' + $("#" + me.pre + fileId).val(), false);
-           ic.molTitle = "";
-           //ic.initUI();
-           if(!bAppend) {
-               ic.init();
-           }
-           else {
-               ic.resetConfig();
-               ic.hAtoms = {};
-               ic.dAtoms = {};
-               ic.bResetAnno = true;
-               ic.bResetSets = true;
-           }
+            me.htmlCls.setHtmlCls.fileSupport();
+            ic.molTitle = "";
 
-           ic.bInputfile = true;
-           ic.InputfileData = (ic.InputfileData) ? ic.InputfileData + '\nENDMDL\n' + dataStr : dataStr;
-           ic.InputfileType = 'pdb';
-           ic.pdbParserCls.loadPdbData(dataStr, undefined, undefined, bAppend);
+            //ic.fileCnt = Object.keys(files).length;
+            //ic.loadedFileCnt = 0;
 
-           if(bAppend) {
-               if(ic.bSetChainsAdvancedMenu) ic.definedSetsCls.showSets();
-               if(ic.bAnnoShown) ic.showAnnoCls.showAnnotations();
-           }
-         }
-         reader.readAsText(file);
+            ic.dataStrAll = '';
+
+            this.readFile(bAppend, files, 0, '');
+
+            if(bAppend) {
+                if(ic.bSetChainsAdvancedMenu) ic.definedSetsCls.showSets();
+                if(ic.bAnnoShown) ic.showAnnoCls.showAnnotations();
+            }
        }
+    }
+
+    saveHtml(id) { let me = this.icn3dui, ic = me.icn3d;
+        let html = '';
+        html += '<link rel="stylesheet" href="https:///structure.ncbi.nlm.nih.gov/icn3d/lib/jquery-ui-1.12.1.min.css">\n';
+        html += '<link rel="stylesheet" href="https:///structure.ncbi.nlm.nih.gov/icn3d/icn3d_full_ui.css">\n';
+        html += $("#" + id).html();
+        let idArray = id.split('_');
+        let idStr =(idArray.length > 2) ? idArray[2] : id;
+        let structureStr = Object.keys(ic.structures)[0];
+        if(Object.keys(ic.structures).length > 1) structureStr += '-' + Object.keys(ic.structures)[1];
+        ic.saveFileCls.saveFile(structureStr + '-' + idStr + '.html', 'html', encodeURIComponent(html));
     }
 
     //Hold all functions related to click events.
@@ -268,12 +312,22 @@ class Events {
     //    },
     //    clickRealign: function() {
         me.myEventCls.onIds("#" + me.pre + "mn2_realignresbyres", "click", function(e) { let ic = me.icn3d;
+            if(Object.keys(ic.structures).length < 2) {
+                alert("At least two structuresare required for alignment...");
+                return;
+            }
+            
            ic.realignParserCls.realign();
            me.htmlCls.clickMenuCls.setLogCmd("realign", true);
         });
     //    },
     //    clickRealignonseqalign: function() {
         me.myEventCls.onIds("#" + me.pre + "mn2_realignonseqalign", "click", function(e) { let ic = me.icn3d;
+            if(Object.keys(ic.structures).length < 2) {
+                alert("At least two structuresare required for alignment...");
+                return;
+            }
+
             if(ic.bSetChainsAdvancedMenu === undefined || !ic.bSetChainsAdvancedMenu) {
                let prevHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
                ic.definedSetsCls.setPredefinedInMenu();
@@ -284,12 +338,35 @@ class Events {
             if($("#" + me.pre + "atomsCustomRealign").length) {
                 $("#" + me.pre + "atomsCustomRealign").html(definedAtomsHtml);
             }
-            if($("#" + me.pre + "atomsCustomRealign2").length) {
-                $("#" + me.pre + "atomsCustomRealign2").html(definedAtomsHtml);
-            }
+            //if($("#" + me.pre + "atomsCustomRealign2").length) {
+            //    $("#" + me.pre + "atomsCustomRealign2").html(definedAtomsHtml);
+            //}
             if(ic.bRender) me.htmlCls.dialogCls.openDlg('dl_realign', 'Please select two sets to realign');
             $("#" + me.pre + "atomsCustomRealign").resizable();
-            $("#" + me.pre + "atomsCustomRealign2").resizable();
+            //$("#" + me.pre + "atomsCustomRealign2").resizable();
+        });
+
+        me.myEventCls.onIds("#" + me.pre + "mn2_realignonstruct", "click", function(e) { let ic = me.icn3d;
+            if(Object.keys(ic.structures).length < 2) {
+                alert("At least two structuresare required for alignment...");
+                return;
+            }
+            if(ic.bSetChainsAdvancedMenu === undefined || !ic.bSetChainsAdvancedMenu) {
+               let prevHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+               ic.definedSetsCls.setPredefinedInMenu();
+               ic.bSetChainsAdvancedMenu = true;
+               ic.hAtoms = me.hashUtilsCls.cloneHash(prevHAtoms);
+            }
+            let definedAtomsHtml = ic.definedSetsCls.setAtomMenu(['protein']);
+            if($("#" + me.pre + "atomsCustomRealignByStruct").length) {
+                $("#" + me.pre + "atomsCustomRealignByStruct").html(definedAtomsHtml);
+            }
+            //if($("#" + me.pre + "atomsCustomRealign2").length) {
+            //    $("#" + me.pre + "atomsCustomRealign2").html(definedAtomsHtml);
+            //}
+            if(ic.bRender) me.htmlCls.dialogCls.openDlg('dl_realignbystruct', 'Please select two sets to realign');
+            $("#" + me.pre + "atomsCustomRealignByStruct").resizable();
+            //$("#" + me.pre + "atomsCustomRealign2").resizable();
         });
     //    },
     //    clickApplyRealign: function() {
@@ -302,11 +379,12 @@ class Events {
            }
 
            // save the current selection
-           ic.selectionCls.saveSelectionPrep();
-           let name = 'realignSets';
-           ic.selectionCls.saveSelection(name, name);
+           //ic.selectionCls.saveSelectionPrep();
+           //let name = 'realignSetsBySeq';
+           //ic.selectionCls.saveSelection(name, name);
 
            ic.realignParserCls.realignOnSeqAlign();
+
            if(nameArray.length > 0) {
                me.htmlCls.clickMenuCls.setLogCmd("realign on seq align | " + nameArray, true);
            }
@@ -314,7 +392,59 @@ class Events {
                me.htmlCls.clickMenuCls.setLogCmd("realign on seq align", true);
            }
         });
+
+        me.myEventCls.onIds("#" + me.pre + "applyRealignByStruct", "click", function(e) { let ic = me.icn3d;
+            e.preventDefault();
+            if(!me.cfg.notebook) dialog.dialog( "close" );
+            let nameArray = $("#" + me.pre + "atomsCustomRealignByStruct").val();
+            if(nameArray.length > 0) {
+                ic.hAtoms = ic.definedSetsCls.getAtomsFromNameArray(nameArray);
+            }
+ 
+            // save the current selection
+            //ic.selectionCls.saveSelectionPrep();
+            //let name = 'realignSetsByStruct';
+            //ic.selectionCls.saveSelection(name, name);
+ 
+            ic.realignParserCls.realignOnStructAlign();
+            if(nameArray.length > 0) {
+                me.htmlCls.clickMenuCls.setLogCmd("realign on structure align | " + nameArray, true);
+            }
+            else {
+                me.htmlCls.clickMenuCls.setLogCmd("realign on structure align", true);
+            }
+         });
     //    },
+
+        me.myEventCls.onIds("#" + me.pre + "applyColorSpectrumBySets", "click", function(e) { let ic = me.icn3d;
+            e.preventDefault();
+            if(!me.cfg.notebook) dialog.dialog( "close" );
+            let nameArray = $("#" + me.pre + "atomsCustomColorSpectrum").val();
+            if(nameArray.length == 0) {
+                alert("Please select some sets");
+                return;
+            }
+
+            let bSpectrum = true;
+            ic.setColorCls.setColorBySets(nameArray, bSpectrum);
+
+            me.htmlCls.clickMenuCls.setLogCmd("set color spectrum | " + nameArray, true);
+        });
+
+        me.myEventCls.onIds("#" + me.pre + "applyColorRainbowBySets", "click", function(e) { let ic = me.icn3d;
+            e.preventDefault();
+            if(!me.cfg.notebook) dialog.dialog( "close" );
+            let nameArray = $("#" + me.pre + "atomsCustomColorRainbow").val();
+            if(nameArray.length == 0) {
+                alert("Please select some sets");
+                return;
+            }
+
+            let bSpectrum = false;
+            ic.setColorCls.setColorBySets(nameArray, bSpectrum);
+
+            me.htmlCls.clickMenuCls.setLogCmd("set color rainbow | " + nameArray, true);
+        });
 
     // other
     //    clickViewswitch: function() {
@@ -370,6 +500,27 @@ class Events {
 
     //    },
     //    clickReload_mmtf: function() {
+        me.myEventCls.onIds("#" + me.pre + "reload_vastplus", "click", function(e) { let ic = me.icn3d;
+            e.preventDefault();
+            if(!me.cfg.notebook) dialog.dialog( "close" );
+            me.htmlCls.clickMenuCls.setLogCmd("vast+ search " + $("#" + me.pre + "vastpluspdbid").val(), false);
+            window.open('https://www.ncbi.nlm.nih.gov/Structure/vastplus/vastplus.cgi?uid=' + $("#" + me.pre + "vastpluspdbid").val(), '_blank');
+         });
+
+        me.myEventCls.onIds("#" + me.pre + "reload_vast", "click", function(e) { let ic = me.icn3d;
+            e.preventDefault();
+            if(!me.cfg.notebook) dialog.dialog( "close" );
+            me.htmlCls.clickMenuCls.setLogCmd("vast search " + $("#" + me.pre + "vastpdbid").val() + "_" + $("#" + me.pre + "vastchainid").val(), false);
+            window.open('https://www.ncbi.nlm.nih.gov/Structure/vast/vastsrv.cgi?pdbid=' + $("#" + me.pre + "vastpdbid").val() + '&chain=' + $("#" + me.pre + "vastchainid").val(), '_blank');
+         });
+
+        me.myEventCls.onIds("#" + me.pre + "reload_foldseek", "click", function(e) { let ic = me.icn3d;
+            e.preventDefault();
+            if(!me.cfg.notebook) dialog.dialog( "close" );
+            me.htmlCls.clickMenuCls.setLogCmd("load chainalignment " + $("#" + me.pre + "foldseekchainids").val(), true);
+            window.open(hostUrl + '?chainalign=' + $("#" + me.pre + "foldseekchainids").val(), '_self');
+         });
+
         me.myEventCls.onIds("#" + me.pre + "reload_mmtf", "click", function(e) { let ic = me.icn3d;
            e.preventDefault();
            if(!me.cfg.notebook) dialog.dialog( "close" );
@@ -485,6 +636,14 @@ class Events {
             //window.open( me.htmlCls.baseUrl + 'icn3d/full.html?align=' + alignment + '&showalignseq=1&atype=0', '_blank');
             window.open(hostUrl + '?align=' + alignment + '&showalignseq=1&atype=0&bu=1', '_blank');
          });
+
+         me.myEventCls.onIds("#" + me.pre + "reload_alignaf", "click", function(e) { let ic = me.icn3d;
+            e.preventDefault();
+            if(!me.cfg.notebook) dialog.dialog( "close" );
+            let alignment = $("#" + me.pre + "alignafid1").val() + "_A," + $("#" + me.pre + "alignafid2").val() + "_A";
+            me.htmlCls.clickMenuCls.setLogCmd("load chains " + alignment + " | residues | resdef ", false);
+            window.open(hostUrl + '?chainalign=' + alignment + '&resnum=&resdef=&showalignseq=1', '_blank');
+          });
     //    },
     //    clickReload_chainalign: function() {
         me.myEventCls.onIds("#" + me.pre + "reload_chainalign", "click", function(e) { let ic = me.icn3d;
@@ -492,17 +651,23 @@ class Events {
            if(!me.cfg.notebook) dialog.dialog( "close" );
     //       let alignment = $("#" + me.pre + "chainalignid1").val() + "," + $("#" + me.pre + "chainalignid2").val();
            let alignment = $("#" + me.pre + "chainalignids").val();
+           let idArray = alignment.split(',');
+           let alignment_final = '';
+           for(let i = 0, il = idArray.length; i < il; ++i) {
+               alignment_final += (idArray[i].indexOf('_') != -1) ? idArray[i] : idArray[i] + '_A'; // AlphaFold ID
+               if(i < il - 1) alignment_final += ',';
+           }
            let resalign = $("#" + me.pre + "resalignids").val();
-           let predefinedres = $("#" + me.pre + "predefinedres").val().trim().replace(/\n/g, ' | ');
+           let predefinedres = $("#" + me.pre + "predefinedres").val().trim().replace(/\n/g, '; ');
 
-           if(predefinedres && alignment.split(',').length != predefinedres.split(' | ').length) {
+           if(predefinedres && alignment_final.split(',').length - 1 != predefinedres.split('; ').length) {
                alert("Please make sure the number of chains and the lines of predefined residues are the same...");
                return;
            }
 
-           me.htmlCls.clickMenuCls.setLogCmd("load chains " + alignment + " | residues " + resalign + " | resdef " + predefinedres, false);
+           me.htmlCls.clickMenuCls.setLogCmd("load chains " + alignment_final + " | residues " + resalign + " | resdef " + predefinedres, false);
            //window.open(me.htmlCls.baseUrl + 'icn3d/full.html?chainalign=' + alignment + '&resnum=' + resalign + '&resdef=' + predefinedres + '&showalignseq=1', '_blank');
-           window.open(hostUrl + '?chainalign=' + alignment + '&resnum=' + resalign + '&resdef=' + predefinedres + '&showalignseq=1', '_blank');
+           window.open(hostUrl + '?chainalign=' + alignment_final + '&resnum=' + resalign + '&resdef=' + predefinedres + '&showalignseq=1', '_blank');
         });
 
         me.myEventCls.onIds("#" + me.pre + "reload_chainalign_asym", "click", function(e) { let ic = me.icn3d;
@@ -510,16 +675,22 @@ class Events {
            if(!me.cfg.notebook) dialog.dialog( "close" );
     //       let alignment = $("#" + me.pre + "chainalignid1").val() + "," + $("#" + me.pre + "chainalignid2").val();
            let alignment = $("#" + me.pre + "chainalignids").val();
+           let idArray = alignment.split(',');
+           let alignment_final = '';
+           for(let i = 0, il = idArray.length; i < il; ++i) {
+               alignment_final += (idArray[i].indexOf('_') != -1) ? idArray[i] : idArray[i] + '_A'; // AlphaFold ID
+               if(i < il - 1) alignment_final += ',';
+           }
            let resalign = $("#" + me.pre + "resalignids").val();
-           let predefinedres = $("#" + me.pre + "predefinedres").val().trim().replace(/\n/g, ' | ');
-           if(predefinedres && alignment.split(',').length != predefinedres.split(' | ').length) {
+           let predefinedres = $("#" + me.pre + "predefinedres").val().trim().replace(/\n/g, '; ');
+           if(predefinedres && alignment_final.split(',').length - 1 != predefinedres.split('; ').length) {
                alert("Please make sure the number of chains and the lines of predefined residues are the same...");
                return;
            }
 
-           me.htmlCls.clickMenuCls.setLogCmd("load chains " + alignment + " on asymmetric unit | residues " + resalign + " | resdef " + predefinedres, false);
+           me.htmlCls.clickMenuCls.setLogCmd("load chains " + alignment_final + " on asymmetric unit | residues " + resalign + " | resdef " + predefinedres, false);
            //window.open(me.htmlCls.baseUrl + 'icn3d/full.html?chainalign=' + alignment + '&resnum=' + resalign + '&resdef=' + predefinedres + '&showalignseq=1&bu=0', '_blank');
-           window.open(hostUrl + '?chainalign=' + alignment + '&resnum=' + resalign + '&resdef=' + predefinedres + '&showalignseq=1&bu=0', '_blank');
+           window.open(hostUrl + '?chainalign=' + alignment_final + '&resnum=' + resalign + '&resdef=' + predefinedres + '&showalignseq=1&bu=0', '_blank');
         });
 
         me.myEventCls.onIds("#" + me.pre + "reload_mutation_3d", "click", function(e) { let ic = me.icn3d;
@@ -607,7 +778,21 @@ class Events {
             //if(!me.cfg.notebook) dialog.dialog( "close" );
             me.htmlCls.clickMenuCls.setLogCmd("load mmdb0 " + $("#" + me.pre + "mmdbid").val(), false);
             window.open(hostUrl + '?mmdbid=' + $("#" + me.pre + "mmdbid").val() + '&bu=0', '_blank');
-         });
+        });
+
+         me.myEventCls.onIds("#" + me.pre + "reload_mmdbaf", "click", function(e) { let ic = me.icn3d;
+            e.preventDefault();
+            //if(!me.cfg.notebook) dialog.dialog( "close" );
+            me.htmlCls.clickMenuCls.setLogCmd("load mmdbaf1 " + $("#" + me.pre + "mmdbafid").val(), false);
+            window.open(hostUrl + '?mmdbafid=' + $("#" + me.pre + "mmdbafid").val() + '&bu=1', '_blank');
+        });
+ 
+         me.myEventCls.onIds("#" + me.pre + "reload_mmdbaf_asym", "click", function(e) { let ic = me.icn3d;
+             e.preventDefault();
+             //if(!me.cfg.notebook) dialog.dialog( "close" );
+             me.htmlCls.clickMenuCls.setLogCmd("load mmdbaf0 " + $("#" + me.pre + "mmdbafid").val(), false);
+             window.open(hostUrl + '?mmdbafid=' + $("#" + me.pre + "mmdbafid").val() + '&bu=0', '_blank');
+        });
 
         me.myEventCls.onIds("#" + me.pre + "mmdbid", "keyup", function(e) { let ic = me.icn3d;
            if (e.keyCode === 13) {
@@ -1113,7 +1298,7 @@ class Events {
                   dataType: 'jsonp',
                   cache: true,
                   tryCount : 0,
-                  retryLimit : 1,
+                  retryLimit : 0, //1
                   beforeSend: function() {
                       ic.ParserUtilsCls.showLoading();
                   },
@@ -1673,6 +1858,37 @@ class Events {
            me.htmlCls.clickMenuCls.setLogCmd("dist | " + nameArray2 + " " + nameArray, true);
         });
 
+        $(document).on("click", ".icn3d-distance", function(e) { let ic = me.icn3d;
+            e.preventDefault();
+            ic.bMeasureDistance = false;
+
+            ic.distPnts = [];
+            ic.labels['distance'] = [];
+            ic.lines['distance'] = [];
+
+            let sets = $(this).attr('sets').split('|');
+ 
+            let nameArray = [sets[0]];
+            let nameArray2 = [sets[1]];
+ 
+            ic.analysisCls.measureDistTwoSets(nameArray, nameArray2);
+            me.htmlCls.clickMenuCls.setLogCmd("dist | " + nameArray2 + " " + nameArray, true);
+         });
+
+        me.myEventCls.onIds("#" + me.pre + "applydisttable", "click", function(e) { let ic = me.icn3d;
+            e.preventDefault();
+            if(!me.cfg.notebook) dialog.dialog( "close" );
+            ic.bMeasureDistance = false;
+ 
+            let nameArray = $("#" + me.pre + "atomsCustomDistTable").val();
+            let nameArray2 = $("#" + me.pre + "atomsCustomDistTable2").val();
+ 
+            ic.analysisCls.measureDistManySets(nameArray, nameArray2);
+            me.htmlCls.dialogCls.openDlg('dl_disttable', 'Distance among the sets');
+
+            me.htmlCls.clickMenuCls.setLogCmd("disttable | " + nameArray2 + " " + nameArray, true);
+        });
+
     //    clickApply_thickness: function() {
         me.myEventCls.onIds("#" + me.pre + "apply_thickness_3dprint", "click", function(e) { let ic = me.icn3d;
             e.preventDefault();
@@ -1748,6 +1964,9 @@ class Events {
                   let menuStr = ic.applyCommandCls.getMenuFromCmd(cmdStr);
                   $("#" + me.pre + "replay_cmd").html('Cmd: ' + cmdStr);
                   $("#" + me.pre + "replay_menu").html('Menu: ' + menuStr);
+
+                  me.htmlCls.clickMenuCls.setLogCmd(cmdStrOri, true);
+
                   ic.drawCls.draw();
              }
         });
@@ -1794,15 +2013,9 @@ class Events {
         $(document).on("click", ".icn3d-saveicon", function(e) { let ic = me.icn3d;
            e.stopImmediatePropagation();
            let id = $(this).attr('pid');
-           let html = '';
-           html += '<link rel="stylesheet" href="https:///structure.ncbi.nlm.nih.gov/icn3d/lib/jquery-ui-1.12.1.min.css">\n';
-           html += '<link rel="stylesheet" href="https:///structure.ncbi.nlm.nih.gov/icn3d/icn3d_full_ui.css">\n';
-           html += $("#" + id).html();
-           let idArray = id.split('_');
-           let idStr =(idArray.length > 2) ? idArray[2] : id;
-           let structureStr = Object.keys(ic.structures)[0];
-           if(Object.keys(ic.structures).length > 1) structureStr += '-' + Object.keys(ic.structures)[1];
-           ic.saveFileCls.saveFile(structureStr + '-' + idStr + '.html', 'html', encodeURIComponent(html));
+
+           thisClass.saveHtml(id);
+           me.htmlCls.clickMenuCls.setLogCmd("save html " + id, true);
         });
     //    },
     //    clickHideDialog: function() {

@@ -1,3 +1,5106 @@
+var vr = (function (exports) {
+    'use strict';
+
+    /*
+    import {
+        AnimationClip,
+        Bone,
+        Box3,
+        BufferAttribute,
+        BufferGeometry,
+        ClampToEdgeWrapping,
+        Color,
+        DirectionalLight,
+        DoubleSide,
+        FileLoader,
+        FrontSide,
+        Group,
+        ImageBitmapLoader,
+        InterleavedBuffer,
+        InterleavedBufferAttribute,
+        Interpolant,
+        InterpolateDiscrete,
+        InterpolateLinear,
+        Line,
+        LineBasicMaterial,
+        LineLoop,
+        LineSegments,
+        LinearFilter,
+        LinearMipmapLinearFilter,
+        LinearMipmapNearestFilter,
+        Loader,
+        LoaderUtils,
+        Material,
+        MathUtils,
+        Matrix4,
+        Mesh,
+        MeshBasicMaterial,
+        MeshPhysicalMaterial,
+        MeshStandardMaterial,
+        MirroredRepeatWrapping,
+        NearestFilter,
+        NearestMipmapLinearFilter,
+        NearestMipmapNearestFilter,
+        NumberKeyframeTrack,
+        Object3D,
+        OrthographicCamera,
+        PerspectiveCamera,
+        PointLight,
+        Points,
+        PointsMaterial,
+        PropertyBinding,
+        Quaternion,
+        QuaternionKeyframeTrack,
+        RepeatWrapping,
+        Skeleton,
+        SkinnedMesh,
+        Sphere,
+        SpotLight,
+        TangentSpaceNormalMap,
+        Texture,
+        TextureLoader,
+        TriangleFanDrawMode,
+        TriangleStripDrawMode,
+        Vector2,
+        Vector3,
+        VectorKeyframeTrack,
+        sRGBEncoding
+    } from 'three';
+    */
+
+    class GLTFLoader extends THREE.Loader {
+
+        constructor( manager ) {
+
+            super( manager );
+
+            this.dracoLoader = null;
+            this.ktx2Loader = null;
+            this.meshoptDecoder = null;
+
+            this.pluginCallbacks = [];
+
+            this.register( function ( parser ) {
+
+                return new GLTFMaterialsClearcoatExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFTextureBasisUExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFTextureWebPExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFMaterialsSheenExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFMaterialsTransmissionExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFMaterialsVolumeExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFMaterialsIorExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFMaterialsSpecularExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFLightsExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFMeshoptCompression( parser );
+
+            } );
+
+        }
+
+        load( url, onLoad, onProgress, onError ) {
+
+            const scope = this;
+
+            let resourcePath;
+
+            if ( this.resourcePath !== '' ) {
+
+                resourcePath = this.resourcePath;
+
+            } else if ( this.path !== '' ) {
+
+                resourcePath = this.path;
+
+            } else {
+
+                resourcePath = LoaderUtils.extractUrlBase( url );
+
+            }
+
+            // Tells the LoadingManager to track an extra item, which resolves after
+            // the model is fully loaded. This means the count of items loaded will
+            // be incorrect, but ensures manager.onLoad() does not fire early.
+            this.manager.itemStart( url );
+
+            const _onError = function ( e ) {
+
+                if ( onError ) {
+
+                    onError( e );
+
+                } else {
+
+                    console.error( e );
+
+                }
+
+                scope.manager.itemError( url );
+                scope.manager.itemEnd( url );
+
+            };
+
+            const loader = new FileLoader( this.manager );
+
+            loader.setPath( this.path );
+            loader.setResponseType( 'arraybuffer' );
+            loader.setRequestHeader( this.requestHeader );
+            loader.setWithCredentials( this.withCredentials );
+
+            loader.load( url, function ( data ) {
+
+                try {
+
+                    scope.parse( data, resourcePath, function ( gltf ) {
+
+                        onLoad( gltf );
+
+                        scope.manager.itemEnd( url );
+
+                    }, _onError );
+
+                } catch ( e ) {
+
+                    _onError( e );
+
+                }
+
+            }, onProgress, _onError );
+
+        }
+
+        setDRACOLoader( dracoLoader ) {
+
+            this.dracoLoader = dracoLoader;
+            return this;
+
+        }
+
+        setDDSLoader() {
+
+            throw new Error(
+
+                'THREE.GLTFLoader: "MSFT_texture_dds" no longer supported. Please update to "KHR_texture_basisu".'
+
+            );
+
+        }
+
+        setKTX2Loader( ktx2Loader ) {
+
+            this.ktx2Loader = ktx2Loader;
+            return this;
+
+        }
+
+        setMeshoptDecoder( meshoptDecoder ) {
+
+            this.meshoptDecoder = meshoptDecoder;
+            return this;
+
+        }
+
+        register( callback ) {
+
+            if ( this.pluginCallbacks.indexOf( callback ) === - 1 ) {
+
+                this.pluginCallbacks.push( callback );
+
+            }
+
+            return this;
+
+        }
+
+        unregister( callback ) {
+
+            if ( this.pluginCallbacks.indexOf( callback ) !== - 1 ) {
+
+                this.pluginCallbacks.splice( this.pluginCallbacks.indexOf( callback ), 1 );
+
+            }
+
+            return this;
+
+        }
+
+        parse( data, path, onLoad, onError ) {
+
+            let content;
+            const extensions = {};
+            const plugins = {};
+
+            if ( typeof data === 'string' ) {
+
+                content = data;
+
+            } else {
+
+                const magic = LoaderUtils.decodeText( new Uint8Array( data, 0, 4 ) );
+
+                if ( magic === BINARY_EXTENSION_HEADER_MAGIC ) {
+
+                    try {
+
+                        extensions[ EXTENSIONS.KHR_BINARY_GLTF ] = new GLTFBinaryExtension( data );
+
+                    } catch ( error ) {
+
+                        if ( onError ) onError( error );
+                        return;
+
+                    }
+
+                    content = extensions[ EXTENSIONS.KHR_BINARY_GLTF ].content;
+
+                } else {
+
+                    content = LoaderUtils.decodeText( new Uint8Array( data ) );
+
+                }
+
+            }
+
+            const json = JSON.parse( content );
+
+            if ( json.asset === undefined || json.asset.version[ 0 ] < 2 ) {
+
+                if ( onError ) onError( new Error( 'THREE.GLTFLoader: Unsupported asset. glTF versions >=2.0 are supported.' ) );
+                return;
+
+            }
+
+            const parser = new GLTFParser( json, {
+
+                path: path || this.resourcePath || '',
+                crossOrigin: this.crossOrigin,
+                requestHeader: this.requestHeader,
+                manager: this.manager,
+                ktx2Loader: this.ktx2Loader,
+                meshoptDecoder: this.meshoptDecoder
+
+            } );
+
+            parser.fileLoader.setRequestHeader( this.requestHeader );
+
+            for ( let i = 0; i < this.pluginCallbacks.length; i ++ ) {
+
+                const plugin = this.pluginCallbacks[ i ]( parser );
+                plugins[ plugin.name ] = plugin;
+
+                // Workaround to avoid determining as unknown extension
+                // in addUnknownExtensionsToUserData().
+                // Remove this workaround if we move all the existing
+                // extension handlers to plugin system
+                extensions[ plugin.name ] = true;
+
+            }
+
+            if ( json.extensionsUsed ) {
+
+                for ( let i = 0; i < json.extensionsUsed.length; ++ i ) {
+
+                    const extensionName = json.extensionsUsed[ i ];
+                    const extensionsRequired = json.extensionsRequired || [];
+
+                    switch ( extensionName ) {
+
+                        case EXTENSIONS.KHR_MATERIALS_UNLIT:
+                            extensions[ extensionName ] = new GLTFMaterialsUnlitExtension();
+                            break;
+
+                        case EXTENSIONS.KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS:
+                            extensions[ extensionName ] = new GLTFMaterialsPbrSpecularGlossinessExtension();
+                            break;
+
+                        case EXTENSIONS.KHR_DRACO_MESH_COMPRESSION:
+                            extensions[ extensionName ] = new GLTFDracoMeshCompressionExtension( json, this.dracoLoader );
+                            break;
+
+                        case EXTENSIONS.KHR_TEXTURE_TRANSFORM:
+                            extensions[ extensionName ] = new GLTFTextureTransformExtension();
+                            break;
+
+                        case EXTENSIONS.KHR_MESH_QUANTIZATION:
+                            extensions[ extensionName ] = new GLTFMeshQuantizationExtension();
+                            break;
+
+                        default:
+
+                            if ( extensionsRequired.indexOf( extensionName ) >= 0 && plugins[ extensionName ] === undefined ) {
+
+                                console.warn( 'THREE.GLTFLoader: Unknown extension "' + extensionName + '".' );
+
+                            }
+
+                    }
+
+                }
+
+            }
+
+            parser.setExtensions( extensions );
+            parser.setPlugins( plugins );
+            parser.parse( onLoad, onError );
+
+        }
+
+        parseAsync( data, path ) {
+
+            const scope = this;
+
+            return new Promise( function ( resolve, reject ) {
+
+                scope.parse( data, path, resolve, reject );
+
+            } );
+
+        }
+
+    }
+
+    /* GLTFREGISTRY */
+
+    function GLTFRegistry() {
+
+        let objects = {};
+
+        return  {
+
+            get: function ( key ) {
+
+                return objects[ key ];
+
+            },
+
+            add: function ( key, object ) {
+
+                objects[ key ] = object;
+
+            },
+
+            remove: function ( key ) {
+
+                delete objects[ key ];
+
+            },
+
+            removeAll: function () {
+
+                objects = {};
+
+            }
+
+        };
+
+    }
+
+    /*********************************/
+    /********** EXTENSIONS ***********/
+    /*********************************/
+
+    const EXTENSIONS = {
+        KHR_BINARY_GLTF: 'KHR_binary_glTF',
+        KHR_DRACO_MESH_COMPRESSION: 'KHR_draco_mesh_compression',
+        KHR_LIGHTS_PUNCTUAL: 'KHR_lights_punctual',
+        KHR_MATERIALS_CLEARCOAT: 'KHR_materials_clearcoat',
+        KHR_MATERIALS_IOR: 'KHR_materials_ior',
+        KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS: 'KHR_materials_pbrSpecularGlossiness',
+        KHR_MATERIALS_SHEEN: 'KHR_materials_sheen',
+        KHR_MATERIALS_SPECULAR: 'KHR_materials_specular',
+        KHR_MATERIALS_TRANSMISSION: 'KHR_materials_transmission',
+        KHR_MATERIALS_UNLIT: 'KHR_materials_unlit',
+        KHR_MATERIALS_VOLUME: 'KHR_materials_volume',
+        KHR_TEXTURE_BASISU: 'KHR_texture_basisu',
+        KHR_TEXTURE_TRANSFORM: 'KHR_texture_transform',
+        KHR_MESH_QUANTIZATION: 'KHR_mesh_quantization',
+        EXT_TEXTURE_WEBP: 'EXT_texture_webp',
+        EXT_MESHOPT_COMPRESSION: 'EXT_meshopt_compression'
+    };
+
+    /**
+     * Punctual Lights Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_lights_punctual
+     */
+    class GLTFLightsExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_LIGHTS_PUNCTUAL;
+
+            // Object3D instance caches
+            this.cache = { refs: {}, uses: {} };
+
+        }
+
+        _markDefs() {
+
+            const parser = this.parser;
+            const nodeDefs = this.parser.json.nodes || [];
+
+            for ( let nodeIndex = 0, nodeLength = nodeDefs.length; nodeIndex < nodeLength; nodeIndex ++ ) {
+
+                const nodeDef = nodeDefs[ nodeIndex ];
+
+                if ( nodeDef.extensions
+                        && nodeDef.extensions[ this.name ]
+                        && nodeDef.extensions[ this.name ].light !== undefined ) {
+
+                    parser._addNodeRef( this.cache, nodeDef.extensions[ this.name ].light );
+
+                }
+
+            }
+
+        }
+
+        _loadLight( lightIndex ) {
+
+            const parser = this.parser;
+            const cacheKey = 'light:' + lightIndex;
+            let dependency = parser.cache.get( cacheKey );
+
+            if ( dependency ) return dependency;
+
+            const json = parser.json;
+            const extensions = ( json.extensions && json.extensions[ this.name ] ) || {};
+            const lightDefs = extensions.lights || [];
+            const lightDef = lightDefs[ lightIndex ];
+            let lightNode;
+
+            const color = new Color( 0xffffff );
+
+            if ( lightDef.color !== undefined ) color.fromArray( lightDef.color );
+
+            const range = lightDef.range !== undefined ? lightDef.range : 0;
+
+            switch ( lightDef.type ) {
+
+                case 'directional':
+                    lightNode = new DirectionalLight( color );
+                    lightNode.target.position.set( 0, 0, - 1 );
+                    lightNode.add( lightNode.target );
+                    break;
+
+                case 'point':
+                    lightNode = new PointLight( color );
+                    lightNode.distance = range;
+                    break;
+
+                case 'spot':
+                    lightNode = new SpotLight( color );
+                    lightNode.distance = range;
+                    // Handle spotlight properties.
+                    lightDef.spot = lightDef.spot || {};
+                    lightDef.spot.innerConeAngle = lightDef.spot.innerConeAngle !== undefined ? lightDef.spot.innerConeAngle : 0;
+                    lightDef.spot.outerConeAngle = lightDef.spot.outerConeAngle !== undefined ? lightDef.spot.outerConeAngle : Math.PI / 4.0;
+                    lightNode.angle = lightDef.spot.outerConeAngle;
+                    lightNode.penumbra = 1.0 - lightDef.spot.innerConeAngle / lightDef.spot.outerConeAngle;
+                    lightNode.target.position.set( 0, 0, - 1 );
+                    lightNode.add( lightNode.target );
+                    break;
+
+                default:
+                    throw new Error( 'THREE.GLTFLoader: Unexpected light type: ' + lightDef.type );
+
+            }
+
+            // Some lights (e.g. spot) default to a position other than the origin. Reset the position
+            // here, because node-level parsing will only override position if explicitly specified.
+            lightNode.position.set( 0, 0, 0 );
+
+            lightNode.decay = 2;
+
+            if ( lightDef.intensity !== undefined ) lightNode.intensity = lightDef.intensity;
+
+            lightNode.name = parser.createUniqueName( lightDef.name || ( 'light_' + lightIndex ) );
+
+            dependency = Promise.resolve( lightNode );
+
+            parser.cache.add( cacheKey, dependency );
+
+            return dependency;
+
+        }
+
+        createNodeAttachment( nodeIndex ) {
+
+            const self = this;
+            const parser = this.parser;
+            const json = parser.json;
+            const nodeDef = json.nodes[ nodeIndex ];
+            const lightDef = ( nodeDef.extensions && nodeDef.extensions[ this.name ] ) || {};
+            const lightIndex = lightDef.light;
+
+            if ( lightIndex === undefined ) return null;
+
+            return this._loadLight( lightIndex ).then( function ( light ) {
+
+                return parser._getNodeRef( self.cache, lightIndex, light );
+
+            } );
+
+        }
+
+    }
+
+    /**
+     * Unlit Materials Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_materials_unlit
+     */
+    class GLTFMaterialsUnlitExtension {
+
+        constructor() {
+
+            this.name = EXTENSIONS.KHR_MATERIALS_UNLIT;
+
+        }
+
+        getMaterialType() {
+
+            return MeshBasicMaterial;
+
+        }
+
+        extendParams( materialParams, materialDef, parser ) {
+
+            const pending = [];
+
+            materialParams.color = new Color( 1.0, 1.0, 1.0 );
+            materialParams.opacity = 1.0;
+
+            const metallicRoughness = materialDef.pbrMetallicRoughness;
+
+            if ( metallicRoughness ) {
+
+                if ( Array.isArray( metallicRoughness.baseColorFactor ) ) {
+
+                    const array = metallicRoughness.baseColorFactor;
+
+                    materialParams.color.fromArray( array );
+                    materialParams.opacity = array[ 3 ];
+
+                }
+
+                if ( metallicRoughness.baseColorTexture !== undefined ) {
+
+                    pending.push( parser.assignTexture( materialParams, 'map', metallicRoughness.baseColorTexture, sRGBEncoding ) );
+
+                }
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+    }
+
+    /**
+     * Clearcoat Materials Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_materials_clearcoat
+     */
+    class GLTFMaterialsClearcoatExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_MATERIALS_CLEARCOAT;
+
+        }
+
+        getMaterialType( materialIndex ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) return null;
+
+            return MeshPhysicalMaterial;
+
+        }
+
+        extendMaterialParams( materialIndex, materialParams ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) {
+
+                return Promise.resolve();
+
+            }
+
+            const pending = [];
+
+            const extension = materialDef.extensions[ this.name ];
+
+            if ( extension.clearcoatFactor !== undefined ) {
+
+                materialParams.clearcoat = extension.clearcoatFactor;
+
+            }
+
+            if ( extension.clearcoatTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'clearcoatMap', extension.clearcoatTexture ) );
+
+            }
+
+            if ( extension.clearcoatRoughnessFactor !== undefined ) {
+
+                materialParams.clearcoatRoughness = extension.clearcoatRoughnessFactor;
+
+            }
+
+            if ( extension.clearcoatRoughnessTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'clearcoatRoughnessMap', extension.clearcoatRoughnessTexture ) );
+
+            }
+
+            if ( extension.clearcoatNormalTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'clearcoatNormalMap', extension.clearcoatNormalTexture ) );
+
+                if ( extension.clearcoatNormalTexture.scale !== undefined ) {
+
+                    const scale = extension.clearcoatNormalTexture.scale;
+
+                    materialParams.clearcoatNormalScale = new Vector2( scale, scale );
+
+                }
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+    }
+
+    /**
+     * Sheen Materials Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_sheen
+     */
+    class GLTFMaterialsSheenExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_MATERIALS_SHEEN;
+
+        }
+
+        getMaterialType( materialIndex ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) return null;
+
+            return MeshPhysicalMaterial;
+
+        }
+
+        extendMaterialParams( materialIndex, materialParams ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) {
+
+                return Promise.resolve();
+
+            }
+
+            const pending = [];
+
+            materialParams.sheenColor = new Color( 0, 0, 0 );
+            materialParams.sheenRoughness = 0;
+            materialParams.sheen = 1;
+
+            const extension = materialDef.extensions[ this.name ];
+
+            if ( extension.sheenColorFactor !== undefined ) {
+
+                materialParams.sheenColor.fromArray( extension.sheenColorFactor );
+
+            }
+
+            if ( extension.sheenRoughnessFactor !== undefined ) {
+
+                materialParams.sheenRoughness = extension.sheenRoughnessFactor;
+
+            }
+
+            if ( extension.sheenColorTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'sheenColorMap', extension.sheenColorTexture, sRGBEncoding ) );
+
+            }
+
+            if ( extension.sheenRoughnessTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'sheenRoughnessMap', extension.sheenRoughnessTexture ) );
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+    }
+
+    /**
+     * Transmission Materials Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_materials_transmission
+     * Draft: https://github.com/KhronosGroup/glTF/pull/1698
+     */
+    class GLTFMaterialsTransmissionExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_MATERIALS_TRANSMISSION;
+
+        }
+
+        getMaterialType( materialIndex ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) return null;
+
+            return MeshPhysicalMaterial;
+
+        }
+
+        extendMaterialParams( materialIndex, materialParams ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) {
+
+                return Promise.resolve();
+
+            }
+
+            const pending = [];
+
+            const extension = materialDef.extensions[ this.name ];
+
+            if ( extension.transmissionFactor !== undefined ) {
+
+                materialParams.transmission = extension.transmissionFactor;
+
+            }
+
+            if ( extension.transmissionTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'transmissionMap', extension.transmissionTexture ) );
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+    }
+
+    /**
+     * Materials Volume Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_materials_volume
+     */
+    class GLTFMaterialsVolumeExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_MATERIALS_VOLUME;
+
+        }
+
+        getMaterialType( materialIndex ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) return null;
+
+            return MeshPhysicalMaterial;
+
+        }
+
+        extendMaterialParams( materialIndex, materialParams ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) {
+
+                return Promise.resolve();
+
+            }
+
+            const pending = [];
+
+            const extension = materialDef.extensions[ this.name ];
+
+            materialParams.thickness = extension.thicknessFactor !== undefined ? extension.thicknessFactor : 0;
+
+            if ( extension.thicknessTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'thicknessMap', extension.thicknessTexture ) );
+
+            }
+
+            materialParams.attenuationDistance = extension.attenuationDistance || 0;
+
+            const colorArray = extension.attenuationColor || [ 1, 1, 1 ];
+            materialParams.attenuationColor = new Color( colorArray[ 0 ], colorArray[ 1 ], colorArray[ 2 ] );
+
+            return Promise.all( pending );
+
+        }
+
+    }
+
+    /**
+     * Materials ior Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_materials_ior
+     */
+    class GLTFMaterialsIorExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_MATERIALS_IOR;
+
+        }
+
+        getMaterialType( materialIndex ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) return null;
+
+            return MeshPhysicalMaterial;
+
+        }
+
+        extendMaterialParams( materialIndex, materialParams ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) {
+
+                return Promise.resolve();
+
+            }
+
+            const extension = materialDef.extensions[ this.name ];
+
+            materialParams.ior = extension.ior !== undefined ? extension.ior : 1.5;
+
+            return Promise.resolve();
+
+        }
+
+    }
+
+    /**
+     * Materials specular Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_materials_specular
+     */
+    class GLTFMaterialsSpecularExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_MATERIALS_SPECULAR;
+
+        }
+
+        getMaterialType( materialIndex ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) return null;
+
+            return MeshPhysicalMaterial;
+
+        }
+
+        extendMaterialParams( materialIndex, materialParams ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) {
+
+                return Promise.resolve();
+
+            }
+
+            const pending = [];
+
+            const extension = materialDef.extensions[ this.name ];
+
+            materialParams.specularIntensity = extension.specularFactor !== undefined ? extension.specularFactor : 1.0;
+
+            if ( extension.specularTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'specularIntensityMap', extension.specularTexture ) );
+
+            }
+
+            const colorArray = extension.specularColorFactor || [ 1, 1, 1 ];
+            materialParams.specularColor = new Color( colorArray[ 0 ], colorArray[ 1 ], colorArray[ 2 ] );
+
+            if ( extension.specularColorTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'specularColorMap', extension.specularColorTexture, sRGBEncoding ) );
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+    }
+
+    /**
+     * BasisU Texture Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_texture_basisu
+     */
+    class GLTFTextureBasisUExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_TEXTURE_BASISU;
+
+        }
+
+        loadTexture( textureIndex ) {
+
+            const parser = this.parser;
+            const json = parser.json;
+
+            const textureDef = json.textures[ textureIndex ];
+
+            if ( ! textureDef.extensions || ! textureDef.extensions[ this.name ] ) {
+
+                return null;
+
+            }
+
+            const extension = textureDef.extensions[ this.name ];
+            const loader = parser.options.ktx2Loader;
+
+            if ( ! loader ) {
+
+                if ( json.extensionsRequired && json.extensionsRequired.indexOf( this.name ) >= 0 ) {
+
+                    throw new Error( 'THREE.GLTFLoader: setKTX2Loader must be called before loading KTX2 textures' );
+
+                } else {
+
+                    // Assumes that the extension is optional and that a fallback texture is present
+                    return null;
+
+                }
+
+            }
+
+            return parser.loadTextureImage( textureIndex, extension.source, loader );
+
+        }
+
+    }
+
+    /**
+     * WebP Texture Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Vendor/EXT_texture_webp
+     */
+    class GLTFTextureWebPExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.EXT_TEXTURE_WEBP;
+            this.isSupported = null;
+
+        }
+
+        loadTexture( textureIndex ) {
+
+            const name = this.name;
+            const parser = this.parser;
+            const json = parser.json;
+
+            const textureDef = json.textures[ textureIndex ];
+
+            if ( ! textureDef.extensions || ! textureDef.extensions[ name ] ) {
+
+                return null;
+
+            }
+
+            const extension = textureDef.extensions[ name ];
+            const source = json.images[ extension.source ];
+
+            let loader = parser.textureLoader;
+            if ( source.uri ) {
+
+                const handler = parser.options.manager.getHandler( source.uri );
+                if ( handler !== null ) loader = handler;
+
+            }
+
+            return this.detectSupport().then( function ( isSupported ) {
+
+                if ( isSupported ) return parser.loadTextureImage( textureIndex, extension.source, loader );
+
+                if ( json.extensionsRequired && json.extensionsRequired.indexOf( name ) >= 0 ) {
+
+                    throw new Error( 'THREE.GLTFLoader: WebP required by asset but unsupported.' );
+
+                }
+
+                // Fall back to PNG or JPEG.
+                return parser.loadTexture( textureIndex );
+
+            } );
+
+        }
+
+        detectSupport() {
+
+            if ( ! this.isSupported ) {
+
+                this.isSupported = new Promise( function ( resolve ) {
+
+                    const image = new Image();
+
+                    // Lossy test image. Support for lossy images doesn't guarantee support for all
+                    // WebP images, unfortunately.
+                    image.src = 'data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA';
+
+                    image.onload = image.onerror = function () {
+
+                        resolve( image.height === 1 );
+
+                    };
+
+                } );
+
+            }
+
+            return this.isSupported;
+
+        }
+
+    }
+
+    /**
+     * meshopt BufferView Compression Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Vendor/EXT_meshopt_compression
+     */
+    class GLTFMeshoptCompression {
+
+        constructor( parser ) {
+
+            this.name = EXTENSIONS.EXT_MESHOPT_COMPRESSION;
+            this.parser = parser;
+
+        }
+
+        loadBufferView( index ) {
+
+            const json = this.parser.json;
+            const bufferView = json.bufferViews[ index ];
+
+            if ( bufferView.extensions && bufferView.extensions[ this.name ] ) {
+
+                const extensionDef = bufferView.extensions[ this.name ];
+
+                const buffer = this.parser.getDependency( 'buffer', extensionDef.buffer );
+                const decoder = this.parser.options.meshoptDecoder;
+
+                if ( ! decoder || ! decoder.supported ) {
+
+                    if ( json.extensionsRequired && json.extensionsRequired.indexOf( this.name ) >= 0 ) {
+
+                        throw new Error( 'THREE.GLTFLoader: setMeshoptDecoder must be called before loading compressed files' );
+
+                    } else {
+
+                        // Assumes that the extension is optional and that fallback buffer data is present
+                        return null;
+
+                    }
+
+                }
+
+                return Promise.all( [ buffer, decoder.ready ] ).then( function ( res ) {
+
+                    const byteOffset = extensionDef.byteOffset || 0;
+                    const byteLength = extensionDef.byteLength || 0;
+
+                    const count = extensionDef.count;
+                    const stride = extensionDef.byteStride;
+
+                    const result = new ArrayBuffer( count * stride );
+                    const source = new Uint8Array( res[ 0 ], byteOffset, byteLength );
+
+                    decoder.decodeGltfBuffer( new Uint8Array( result ), count, stride, source, extensionDef.mode, extensionDef.filter );
+                    return result;
+
+                } );
+
+            } else {
+
+                return null;
+
+            }
+
+        }
+
+    }
+
+    /* BINARY EXTENSION */
+    const BINARY_EXTENSION_HEADER_MAGIC = 'glTF';
+    const BINARY_EXTENSION_HEADER_LENGTH = 12;
+    const BINARY_EXTENSION_CHUNK_TYPES = { JSON: 0x4E4F534A, BIN: 0x004E4942 };
+
+    class GLTFBinaryExtension {
+
+        constructor( data ) {
+
+            this.name = EXTENSIONS.KHR_BINARY_GLTF;
+            this.content = null;
+            this.body = null;
+
+            const headerView = new DataView( data, 0, BINARY_EXTENSION_HEADER_LENGTH );
+
+            this.header = {
+                magic: LoaderUtils.decodeText( new Uint8Array( data.slice( 0, 4 ) ) ),
+                version: headerView.getUint32( 4, true ),
+                length: headerView.getUint32( 8, true )
+            };
+
+            if ( this.header.magic !== BINARY_EXTENSION_HEADER_MAGIC ) {
+
+                throw new Error( 'THREE.GLTFLoader: Unsupported glTF-Binary header.' );
+
+            } else if ( this.header.version < 2.0 ) {
+
+                throw new Error( 'THREE.GLTFLoader: Legacy binary file detected.' );
+
+            }
+
+            const chunkContentsLength = this.header.length - BINARY_EXTENSION_HEADER_LENGTH;
+            const chunkView = new DataView( data, BINARY_EXTENSION_HEADER_LENGTH );
+            let chunkIndex = 0;
+
+            while ( chunkIndex < chunkContentsLength ) {
+
+                const chunkLength = chunkView.getUint32( chunkIndex, true );
+                chunkIndex += 4;
+
+                const chunkType = chunkView.getUint32( chunkIndex, true );
+                chunkIndex += 4;
+
+                if ( chunkType === BINARY_EXTENSION_CHUNK_TYPES.JSON ) {
+
+                    const contentArray = new Uint8Array( data, BINARY_EXTENSION_HEADER_LENGTH + chunkIndex, chunkLength );
+                    this.content = LoaderUtils.decodeText( contentArray );
+
+                } else if ( chunkType === BINARY_EXTENSION_CHUNK_TYPES.BIN ) {
+
+                    const byteOffset = BINARY_EXTENSION_HEADER_LENGTH + chunkIndex;
+                    this.body = data.slice( byteOffset, byteOffset + chunkLength );
+
+                }
+
+                // Clients must ignore chunks with unknown types.
+
+                chunkIndex += chunkLength;
+
+            }
+
+            if ( this.content === null ) {
+
+                throw new Error( 'THREE.GLTFLoader: JSON content not found.' );
+
+            }
+
+        }
+
+    }
+
+    /**
+     * DRACO Mesh Compression Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_draco_mesh_compression
+     */
+    class GLTFDracoMeshCompressionExtension {
+
+        constructor( json, dracoLoader ) {
+
+            if ( ! dracoLoader ) {
+
+                throw new Error( 'THREE.GLTFLoader: No DRACOLoader instance provided.' );
+
+            }
+
+            this.name = EXTENSIONS.KHR_DRACO_MESH_COMPRESSION;
+            this.json = json;
+            this.dracoLoader = dracoLoader;
+            this.dracoLoader.preload();
+
+        }
+
+        decodePrimitive( primitive, parser ) {
+
+            const json = this.json;
+            const dracoLoader = this.dracoLoader;
+            const bufferViewIndex = primitive.extensions[ this.name ].bufferView;
+            const gltfAttributeMap = primitive.extensions[ this.name ].attributes;
+            const threeAttributeMap = {};
+            const attributeNormalizedMap = {};
+            const attributeTypeMap = {};
+
+            for ( const attributeName in gltfAttributeMap ) {
+
+                const threeAttributeName = ATTRIBUTES[ attributeName ] || attributeName.toLowerCase();
+
+                threeAttributeMap[ threeAttributeName ] = gltfAttributeMap[ attributeName ];
+
+            }
+
+            for ( const attributeName in primitive.attributes ) {
+
+                const threeAttributeName = ATTRIBUTES[ attributeName ] || attributeName.toLowerCase();
+
+                if ( gltfAttributeMap[ attributeName ] !== undefined ) {
+
+                    const accessorDef = json.accessors[ primitive.attributes[ attributeName ] ];
+                    const componentType = WEBGL_COMPONENT_TYPES[ accessorDef.componentType ];
+
+                    attributeTypeMap[ threeAttributeName ] = componentType;
+                    attributeNormalizedMap[ threeAttributeName ] = accessorDef.normalized === true;
+
+                }
+
+            }
+
+            return parser.getDependency( 'bufferView', bufferViewIndex ).then( function ( bufferView ) {
+
+                return new Promise( function ( resolve ) {
+
+                    dracoLoader.decodeDracoFile( bufferView, function ( geometry ) {
+
+                        for ( const attributeName in geometry.attributes ) {
+
+                            const attribute = geometry.attributes[ attributeName ];
+                            const normalized = attributeNormalizedMap[ attributeName ];
+
+                            if ( normalized !== undefined ) attribute.normalized = normalized;
+
+                        }
+
+                        resolve( geometry );
+
+                    }, threeAttributeMap, attributeTypeMap );
+
+                } );
+
+            } );
+
+        }
+
+    }
+
+    /**
+     * Texture Transform Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_texture_transform
+     */
+    class GLTFTextureTransformExtension {
+
+        constructor() {
+
+            this.name = EXTENSIONS.KHR_TEXTURE_TRANSFORM;
+
+        }
+
+        extendTexture( texture, transform ) {
+
+            if ( transform.texCoord !== undefined ) {
+
+                console.warn( 'THREE.GLTFLoader: Custom UV sets in "' + this.name + '" extension not yet supported.' );
+
+            }
+
+            if ( transform.offset === undefined && transform.rotation === undefined && transform.scale === undefined ) {
+
+                // See https://github.com/mrdoob/three.js/issues/21819.
+                return texture;
+
+            }
+
+            texture = texture.clone();
+
+            if ( transform.offset !== undefined ) {
+
+                texture.offset.fromArray( transform.offset );
+
+            }
+
+            if ( transform.rotation !== undefined ) {
+
+                texture.rotation = transform.rotation;
+
+            }
+
+            if ( transform.scale !== undefined ) {
+
+                texture.repeat.fromArray( transform.scale );
+
+            }
+
+            texture.needsUpdate = true;
+
+            return texture;
+
+        }
+
+    }
+
+    /**
+     * Specular-Glossiness Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Archived/KHR_materials_pbrSpecularGlossiness
+     */
+
+    /**
+     * A sub class of StandardMaterial with some of the functionality
+     * changed via the `onBeforeCompile` callback
+     * @pailhead
+     */
+    class GLTFMeshStandardSGMaterial extends THREE.MeshStandardMaterial {
+
+        constructor( params ) {
+
+            super();
+
+            this.isGLTFSpecularGlossinessMaterial = true;
+
+            //various chunks that need replacing
+            const specularMapParsFragmentChunk = [
+                '#ifdef USE_SPECULARMAP',
+                '   uniform sampler2D specularMap;',
+                '#endif'
+            ].join( '\n' );
+
+            const glossinessMapParsFragmentChunk = [
+                '#ifdef USE_GLOSSINESSMAP',
+                '   uniform sampler2D glossinessMap;',
+                '#endif'
+            ].join( '\n' );
+
+            const specularMapFragmentChunk = [
+                'vec3 specularFactor = specular;',
+                '#ifdef USE_SPECULARMAP',
+                '   vec4 texelSpecular = texture2D( specularMap, vUv );',
+                '   // reads channel RGB, compatible with a glTF Specular-Glossiness (RGBA) texture',
+                '   specularFactor *= texelSpecular.rgb;',
+                '#endif'
+            ].join( '\n' );
+
+            const glossinessMapFragmentChunk = [
+                'float glossinessFactor = glossiness;',
+                '#ifdef USE_GLOSSINESSMAP',
+                '   vec4 texelGlossiness = texture2D( glossinessMap, vUv );',
+                '   // reads channel A, compatible with a glTF Specular-Glossiness (RGBA) texture',
+                '   glossinessFactor *= texelGlossiness.a;',
+                '#endif'
+            ].join( '\n' );
+
+            const lightPhysicalFragmentChunk = [
+                'PhysicalMaterial material;',
+                'material.diffuseColor = diffuseColor.rgb * ( 1. - max( specularFactor.r, max( specularFactor.g, specularFactor.b ) ) );',
+                'vec3 dxy = max( abs( dFdx( geometryNormal ) ), abs( dFdy( geometryNormal ) ) );',
+                'float geometryRoughness = max( max( dxy.x, dxy.y ), dxy.z );',
+                'material.roughness = max( 1.0 - glossinessFactor, 0.0525 ); // 0.0525 corresponds to the base mip of a 256 cubemap.',
+                'material.roughness += geometryRoughness;',
+                'material.roughness = min( material.roughness, 1.0 );',
+                'material.specularColor = specularFactor;',
+            ].join( '\n' );
+
+            const uniforms = {
+                specular: { value: new Color().setHex( 0xffffff ) },
+                glossiness: { value: 1 },
+                specularMap: { value: null },
+                glossinessMap: { value: null }
+            };
+
+            this._extraUniforms = uniforms;
+
+            this.onBeforeCompile = function ( shader ) {
+
+                for ( const uniformName in uniforms ) {
+
+                    shader.uniforms[ uniformName ] = uniforms[ uniformName ];
+
+                }
+
+                shader.fragmentShader = shader.fragmentShader
+                    .replace( 'uniform float roughness;', 'uniform vec3 specular;' )
+                    .replace( 'uniform float metalness;', 'uniform float glossiness;' )
+                    .replace( '#include <roughnessmap_pars_fragment>', specularMapParsFragmentChunk )
+                    .replace( '#include <metalnessmap_pars_fragment>', glossinessMapParsFragmentChunk )
+                    .replace( '#include <roughnessmap_fragment>', specularMapFragmentChunk )
+                    .replace( '#include <metalnessmap_fragment>', glossinessMapFragmentChunk )
+                    .replace( '#include <lights_physical_fragment>', lightPhysicalFragmentChunk );
+
+            };
+
+            Object.defineProperties( this, {
+
+                specular: {
+                    get: function () {
+
+                        return uniforms.specular.value;
+
+                    },
+                    set: function ( v ) {
+
+                        uniforms.specular.value = v;
+
+                    }
+                },
+
+                specularMap: {
+                    get: function () {
+
+                        return uniforms.specularMap.value;
+
+                    },
+                    set: function ( v ) {
+
+                        uniforms.specularMap.value = v;
+
+                        if ( v ) {
+
+                            this.defines.USE_SPECULARMAP = ''; // USE_UV is set by the renderer for specular maps
+
+                        } else {
+
+                            delete this.defines.USE_SPECULARMAP;
+
+                        }
+
+                    }
+                },
+
+                glossiness: {
+                    get: function () {
+
+                        return uniforms.glossiness.value;
+
+                    },
+                    set: function ( v ) {
+
+                        uniforms.glossiness.value = v;
+
+                    }
+                },
+
+                glossinessMap: {
+                    get: function () {
+
+                        return uniforms.glossinessMap.value;
+
+                    },
+                    set: function ( v ) {
+
+                        uniforms.glossinessMap.value = v;
+
+                        if ( v ) {
+
+                            this.defines.USE_GLOSSINESSMAP = '';
+                            this.defines.USE_UV = '';
+
+                        } else {
+
+                            delete this.defines.USE_GLOSSINESSMAP;
+                            delete this.defines.USE_UV;
+
+                        }
+
+                    }
+                }
+
+            } );
+
+            delete this.metalness;
+            delete this.roughness;
+            delete this.metalnessMap;
+            delete this.roughnessMap;
+
+            this.setValues( params );
+
+        }
+
+        copy( source ) {
+
+            super.copy( source );
+
+            this.specularMap = source.specularMap;
+            this.specular.copy( source.specular );
+            this.glossinessMap = source.glossinessMap;
+            this.glossiness = source.glossiness;
+            delete this.metalness;
+            delete this.roughness;
+            delete this.metalnessMap;
+            delete this.roughnessMap;
+            return this;
+
+        }
+
+    }
+
+
+    class GLTFMaterialsPbrSpecularGlossinessExtension {
+
+        constructor() {
+
+            this.name = EXTENSIONS.KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS;
+
+            this.specularGlossinessParams = [
+                'color',
+                'map',
+                'lightMap',
+                'lightMapIntensity',
+                'aoMap',
+                'aoMapIntensity',
+                'emissive',
+                'emissiveIntensity',
+                'emissiveMap',
+                'bumpMap',
+                'bumpScale',
+                'normalMap',
+                'normalMapType',
+                'displacementMap',
+                'displacementScale',
+                'displacementBias',
+                'specularMap',
+                'specular',
+                'glossinessMap',
+                'glossiness',
+                'alphaMap',
+                'envMap',
+                'envMapIntensity'
+            ];
+
+        }
+
+        getMaterialType() {
+
+            return GLTFMeshStandardSGMaterial;
+
+        }
+
+        extendParams( materialParams, materialDef, parser ) {
+
+            const pbrSpecularGlossiness = materialDef.extensions[ this.name ];
+
+            materialParams.color = new Color( 1.0, 1.0, 1.0 );
+            materialParams.opacity = 1.0;
+
+            const pending = [];
+
+            if ( Array.isArray( pbrSpecularGlossiness.diffuseFactor ) ) {
+
+                const array = pbrSpecularGlossiness.diffuseFactor;
+
+                materialParams.color.fromArray( array );
+                materialParams.opacity = array[ 3 ];
+
+            }
+
+            if ( pbrSpecularGlossiness.diffuseTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'map', pbrSpecularGlossiness.diffuseTexture, sRGBEncoding ) );
+
+            }
+
+            materialParams.emissive = new Color( 0.0, 0.0, 0.0 );
+            materialParams.glossiness = pbrSpecularGlossiness.glossinessFactor !== undefined ? pbrSpecularGlossiness.glossinessFactor : 1.0;
+            materialParams.specular = new Color( 1.0, 1.0, 1.0 );
+
+            if ( Array.isArray( pbrSpecularGlossiness.specularFactor ) ) {
+
+                materialParams.specular.fromArray( pbrSpecularGlossiness.specularFactor );
+
+            }
+
+            if ( pbrSpecularGlossiness.specularGlossinessTexture !== undefined ) {
+
+                const specGlossMapDef = pbrSpecularGlossiness.specularGlossinessTexture;
+                pending.push( parser.assignTexture( materialParams, 'glossinessMap', specGlossMapDef ) );
+                pending.push( parser.assignTexture( materialParams, 'specularMap', specGlossMapDef, sRGBEncoding ) );
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+        createMaterial( materialParams ) {
+
+            const material = new GLTFMeshStandardSGMaterial( materialParams );
+            material.fog = true;
+
+            material.color = materialParams.color;
+
+            material.map = materialParams.map === undefined ? null : materialParams.map;
+
+            material.lightMap = null;
+            material.lightMapIntensity = 1.0;
+
+            material.aoMap = materialParams.aoMap === undefined ? null : materialParams.aoMap;
+            material.aoMapIntensity = 1.0;
+
+            material.emissive = materialParams.emissive;
+            material.emissiveIntensity = 1.0;
+            material.emissiveMap = materialParams.emissiveMap === undefined ? null : materialParams.emissiveMap;
+
+            material.bumpMap = materialParams.bumpMap === undefined ? null : materialParams.bumpMap;
+            material.bumpScale = 1;
+
+            material.normalMap = materialParams.normalMap === undefined ? null : materialParams.normalMap;
+            material.normalMapType = TangentSpaceNormalMap;
+
+            if ( materialParams.normalScale ) material.normalScale = materialParams.normalScale;
+
+            material.displacementMap = null;
+            material.displacementScale = 1;
+            material.displacementBias = 0;
+
+            material.specularMap = materialParams.specularMap === undefined ? null : materialParams.specularMap;
+            material.specular = materialParams.specular;
+
+            material.glossinessMap = materialParams.glossinessMap === undefined ? null : materialParams.glossinessMap;
+            material.glossiness = materialParams.glossiness;
+
+            material.alphaMap = null;
+
+            material.envMap = materialParams.envMap === undefined ? null : materialParams.envMap;
+            material.envMapIntensity = 1.0;
+
+            return material;
+
+        }
+
+    }
+
+    /**
+     * Mesh Quantization Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_mesh_quantization
+     */
+    class GLTFMeshQuantizationExtension {
+
+        constructor() {
+
+            this.name = EXTENSIONS.KHR_MESH_QUANTIZATION;
+
+        }
+
+    }
+
+    /*********************************/
+    /********** INTERPOLATION ********/
+    /*********************************/
+
+    // Spline Interpolation
+    // Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#appendix-c-spline-interpolation
+    class GLTFCubicSplineInterpolant extends THREE.Interpolant {
+
+        constructor( parameterPositions, sampleValues, sampleSize, resultBuffer ) {
+
+            super( parameterPositions, sampleValues, sampleSize, resultBuffer );
+
+        }
+
+        copySampleValue_( index ) {
+
+            // Copies a sample value to the result buffer. See description of glTF
+            // CUBICSPLINE values layout in interpolate_() function below.
+
+            const result = this.resultBuffer,
+                values = this.sampleValues,
+                valueSize = this.valueSize,
+                offset = index * valueSize * 3 + valueSize;
+
+            for ( let i = 0; i !== valueSize; i ++ ) {
+
+                result[ i ] = values[ offset + i ];
+
+            }
+
+            return result;
+
+        }
+
+    }
+
+    GLTFCubicSplineInterpolant.prototype.beforeStart_ = GLTFCubicSplineInterpolant.prototype.copySampleValue_;
+
+    GLTFCubicSplineInterpolant.prototype.afterEnd_ = GLTFCubicSplineInterpolant.prototype.copySampleValue_;
+
+    GLTFCubicSplineInterpolant.prototype.interpolate_ = function ( i1, t0, t, t1 ) {
+
+        const result = this.resultBuffer;
+        const values = this.sampleValues;
+        const stride = this.valueSize;
+
+        const stride2 = stride * 2;
+        const stride3 = stride * 3;
+
+        const td = t1 - t0;
+
+        const p = ( t - t0 ) / td;
+        const pp = p * p;
+        const ppp = pp * p;
+
+        const offset1 = i1 * stride3;
+        const offset0 = offset1 - stride3;
+
+        const s2 = - 2 * ppp + 3 * pp;
+        const s3 = ppp - pp;
+        const s0 = 1 - s2;
+        const s1 = s3 - pp + p;
+
+        // Layout of keyframe output values for CUBICSPLINE animations:
+        //   [ inTangent_1, splineVertex_1, outTangent_1, inTangent_2, splineVertex_2, ... ]
+        for ( let i = 0; i !== stride; i ++ ) {
+
+            const p0 = values[ offset0 + i + stride ]; // splineVertex_k
+            const m0 = values[ offset0 + i + stride2 ] * td; // outTangent_k * (t_k+1 - t_k)
+            const p1 = values[ offset1 + i + stride ]; // splineVertex_k+1
+            const m1 = values[ offset1 + i ] * td; // inTangent_k+1 * (t_k+1 - t_k)
+
+            result[ i ] = s0 * p0 + s1 * m0 + s2 * p1 + s3 * m1;
+
+        }
+
+        return result;
+
+    };
+
+    const _q = new THREE.Quaternion();
+
+    class GLTFCubicSplineQuaternionInterpolant extends GLTFCubicSplineInterpolant {
+
+        interpolate_( i1, t0, t, t1 ) {
+
+            const result = super.interpolate_( i1, t0, t, t1 );
+
+            _q.fromArray( result ).normalize().toArray( result );
+
+            return result;
+
+        }
+
+    }
+
+
+    /*********************************/
+    /********** INTERNALS ************/
+    /*********************************/
+
+    /* CONSTANTS */
+
+    const WEBGL_CONSTANTS = {
+        FLOAT: 5126,
+        //FLOAT_MAT2: 35674,
+        FLOAT_MAT3: 35675,
+        FLOAT_MAT4: 35676,
+        FLOAT_VEC2: 35664,
+        FLOAT_VEC3: 35665,
+        FLOAT_VEC4: 35666,
+        LINEAR: 9729,
+        REPEAT: 10497,
+        SAMPLER_2D: 35678,
+        POINTS: 0,
+        LINES: 1,
+        LINE_LOOP: 2,
+        LINE_STRIP: 3,
+        TRIANGLES: 4,
+        TRIANGLE_STRIP: 5,
+        TRIANGLE_FAN: 6,
+        UNSIGNED_BYTE: 5121,
+        UNSIGNED_SHORT: 5123
+    };
+
+    const WEBGL_COMPONENT_TYPES = {
+        5120: Int8Array,
+        5121: Uint8Array,
+        5122: Int16Array,
+        5123: Uint16Array,
+        5125: Uint32Array,
+        5126: Float32Array
+    };
+
+    const WEBGL_FILTERS = {
+        9728: THREE.NearestFilter,
+        9729: THREE.LinearFilter,
+        9984: THREE.NearestMipmapNearestFilter,
+        9985: THREE.LinearMipmapNearestFilter,
+        9986: THREE.NearestMipmapLinearFilter,
+        9987: THREE.LinearMipmapLinearFilter
+    };
+
+    const WEBGL_WRAPPINGS = {
+        33071: THREE.ClampToEdgeWrapping,
+        33648: THREE.MirroredRepeatWrapping,
+        10497: THREE.RepeatWrapping
+    };
+
+    const WEBGL_TYPE_SIZES = {
+        'SCALAR': 1,
+        'VEC2': 2,
+        'VEC3': 3,
+        'VEC4': 4,
+        'MAT2': 4,
+        'MAT3': 9,
+        'MAT4': 16
+    };
+
+    const ATTRIBUTES = {
+        POSITION: 'position',
+        NORMAL: 'normal',
+        TANGENT: 'tangent',
+        TEXCOORD_0: 'uv',
+        TEXCOORD_1: 'uv2',
+        COLOR_0: 'color',
+        WEIGHTS_0: 'skinWeight',
+        JOINTS_0: 'skinIndex',
+    };
+
+    const PATH_PROPERTIES = {
+        scale: 'scale',
+        translation: 'position',
+        rotation: 'quaternion',
+        weights: 'morphTargetInfluences'
+    };
+
+    const INTERPOLATION = {
+        CUBICSPLINE: undefined, // We use a custom interpolant (GLTFCubicSplineInterpolation) for CUBICSPLINE tracks. Each
+                                    // keyframe track will be initialized with a default interpolation type, then modified.
+        LINEAR: THREE.InterpolateLinear,
+        STEP: THREE.InterpolateDiscrete
+    };
+
+    const ALPHA_MODES = {
+        OPAQUE: 'OPAQUE',
+        MASK: 'MASK',
+        BLEND: 'BLEND'
+    };
+
+    /**
+     * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#default-material
+     */
+    function createDefaultMaterial( cache ) {
+
+        if ( cache[ 'DefaultMaterial' ] === undefined ) {
+
+            cache[ 'DefaultMaterial' ] = new MeshStandardMaterial( {
+                color: 0xFFFFFF,
+                emissive: 0x000000,
+                metalness: 1,
+                roughness: 1,
+                transparent: false,
+                depthTest: true,
+                side: FrontSide
+            } );
+
+        }
+
+        return cache[ 'DefaultMaterial' ];
+
+    }
+
+    function addUnknownExtensionsToUserData( knownExtensions, object, objectDef ) {
+
+        // Add unknown glTF extensions to an object's userData.
+
+        for ( const name in objectDef.extensions ) {
+
+            if ( knownExtensions[ name ] === undefined ) {
+
+                object.userData.gltfExtensions = object.userData.gltfExtensions || {};
+                object.userData.gltfExtensions[ name ] = objectDef.extensions[ name ];
+
+            }
+
+        }
+
+    }
+
+    /**
+     * @param {Object3D|Material|BufferGeometry} object
+     * @param {GLTF.definition} gltfDef
+     */
+    function assignExtrasToUserData( object, gltfDef ) {
+
+        if ( gltfDef.extras !== undefined ) {
+
+            if ( typeof gltfDef.extras === 'object' ) {
+
+                Object.assign( object.userData, gltfDef.extras );
+
+            } else {
+
+                console.warn( 'THREE.GLTFLoader: Ignoring primitive type .extras, ' + gltfDef.extras );
+
+            }
+
+        }
+
+    }
+
+    /**
+     * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#morph-targets
+     *
+     * @param {BufferGeometry} geometry
+     * @param {Array<GLTF.Target>} targets
+     * @param {GLTFParser} parser
+     * @return {Promise<BufferGeometry>}
+     */
+    function addMorphTargets( geometry, targets, parser ) {
+
+        let hasMorphPosition = false;
+        let hasMorphNormal = false;
+        let hasMorphColor = false;
+
+        for ( let i = 0, il = targets.length; i < il; i ++ ) {
+
+            const target = targets[ i ];
+
+            if ( target.POSITION !== undefined ) hasMorphPosition = true;
+            if ( target.NORMAL !== undefined ) hasMorphNormal = true;
+            if ( target.COLOR_0 !== undefined ) hasMorphColor = true;
+
+            if ( hasMorphPosition && hasMorphNormal && hasMorphColor ) break;
+
+        }
+
+        if ( ! hasMorphPosition && ! hasMorphNormal && ! hasMorphColor ) return Promise.resolve( geometry );
+
+        const pendingPositionAccessors = [];
+        const pendingNormalAccessors = [];
+        const pendingColorAccessors = [];
+
+        for ( let i = 0, il = targets.length; i < il; i ++ ) {
+
+            const target = targets[ i ];
+
+            if ( hasMorphPosition ) {
+
+                const pendingAccessor = target.POSITION !== undefined
+                    ? parser.getDependency( 'accessor', target.POSITION )
+                    : geometry.attributes.position;
+
+                pendingPositionAccessors.push( pendingAccessor );
+
+            }
+
+            if ( hasMorphNormal ) {
+
+                const pendingAccessor = target.NORMAL !== undefined
+                    ? parser.getDependency( 'accessor', target.NORMAL )
+                    : geometry.attributes.normal;
+
+                pendingNormalAccessors.push( pendingAccessor );
+
+            }
+
+            if ( hasMorphColor ) {
+
+                const pendingAccessor = target.COLOR_0 !== undefined
+                    ? parser.getDependency( 'accessor', target.COLOR_0 )
+                    : geometry.attributes.color;
+
+                pendingColorAccessors.push( pendingAccessor );
+
+            }
+
+        }
+
+        return Promise.all( [
+            Promise.all( pendingPositionAccessors ),
+            Promise.all( pendingNormalAccessors ),
+            Promise.all( pendingColorAccessors )
+        ] ).then( function ( accessors ) {
+
+            const morphPositions = accessors[ 0 ];
+            const morphNormals = accessors[ 1 ];
+            const morphColors = accessors[ 2 ];
+
+            if ( hasMorphPosition ) geometry.morphAttributes.position = morphPositions;
+            if ( hasMorphNormal ) geometry.morphAttributes.normal = morphNormals;
+            if ( hasMorphColor ) geometry.morphAttributes.color = morphColors;
+            geometry.morphTargetsRelative = true;
+
+            return geometry;
+
+        } );
+
+    }
+
+    /**
+     * @param {Mesh} mesh
+     * @param {GLTF.Mesh} meshDef
+     */
+    function updateMorphTargets( mesh, meshDef ) {
+
+        mesh.updateMorphTargets();
+
+        if ( meshDef.weights !== undefined ) {
+
+            for ( let i = 0, il = meshDef.weights.length; i < il; i ++ ) {
+
+                mesh.morphTargetInfluences[ i ] = meshDef.weights[ i ];
+
+            }
+
+        }
+
+        // .extras has user-defined data, so check that .extras.targetNames is an array.
+        if ( meshDef.extras && Array.isArray( meshDef.extras.targetNames ) ) {
+
+            const targetNames = meshDef.extras.targetNames;
+
+            if ( mesh.morphTargetInfluences.length === targetNames.length ) {
+
+                mesh.morphTargetDictionary = {};
+
+                for ( let i = 0, il = targetNames.length; i < il; i ++ ) {
+
+                    mesh.morphTargetDictionary[ targetNames[ i ] ] = i;
+
+                }
+
+            } else {
+
+                console.warn( 'THREE.GLTFLoader: Invalid extras.targetNames length. Ignoring names.' );
+
+            }
+
+        }
+
+    }
+
+    function createPrimitiveKey( primitiveDef ) {
+
+        const dracoExtension = primitiveDef.extensions && primitiveDef.extensions[ EXTENSIONS.KHR_DRACO_MESH_COMPRESSION ];
+        let geometryKey;
+
+        if ( dracoExtension ) {
+
+            geometryKey = 'draco:' + dracoExtension.bufferView
+                    + ':' + dracoExtension.indices
+                    + ':' + createAttributesKey( dracoExtension.attributes );
+
+        } else {
+
+            geometryKey = primitiveDef.indices + ':' + createAttributesKey( primitiveDef.attributes ) + ':' + primitiveDef.mode;
+
+        }
+
+        return geometryKey;
+
+    }
+
+    function createAttributesKey( attributes ) {
+
+        let attributesKey = '';
+
+        const keys = Object.keys( attributes ).sort();
+
+        for ( let i = 0, il = keys.length; i < il; i ++ ) {
+
+            attributesKey += keys[ i ] + ':' + attributes[ keys[ i ] ] + ';';
+
+        }
+
+        return attributesKey;
+
+    }
+
+    function getNormalizedComponentScale( constructor ) {
+
+        // Reference:
+        // https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_mesh_quantization#encoding-quantized-data
+
+        switch ( constructor ) {
+
+            case Int8Array:
+                return 1 / 127;
+
+            case Uint8Array:
+                return 1 / 255;
+
+            case Int16Array:
+                return 1 / 32767;
+
+            case Uint16Array:
+                return 1 / 65535;
+
+            default:
+                throw new Error( 'THREE.GLTFLoader: Unsupported normalized accessor component type.' );
+
+        }
+
+    }
+
+    function getImageURIMimeType( uri ) {
+
+        if ( uri.search( /\.jpe?g($|\?)/i ) > 0 || uri.search( /^data\:image\/jpeg/ ) === 0 ) return 'image/jpeg';
+        if ( uri.search( /\.webp($|\?)/i ) > 0 || uri.search( /^data\:image\/webp/ ) === 0 ) return 'image/webp';
+
+        return 'image/png';
+
+    }
+
+    /* GLTF PARSER */
+
+    class GLTFParser {
+
+        constructor( json = {}, options = {} ) {
+
+            this.json = json;
+            this.extensions = {};
+            this.plugins = {};
+            this.options = options;
+
+            // loader object cache
+            this.cache = new GLTFRegistry();
+
+            // associations between Three.js objects and glTF elements
+            this.associations = new Map();
+
+            // BufferGeometry caching
+            this.primitiveCache = {};
+
+            // Object3D instance caches
+            this.meshCache = { refs: {}, uses: {} };
+            this.cameraCache = { refs: {}, uses: {} };
+            this.lightCache = { refs: {}, uses: {} };
+
+            this.sourceCache = {};
+            this.textureCache = {};
+
+            // Track node names, to ensure no duplicates
+            this.nodeNamesUsed = {};
+
+            // Use an ImageBitmapLoader if imageBitmaps are supported. Moves much of the
+            // expensive work of uploading a texture to the GPU off the main thread.
+            if ( typeof createImageBitmap !== 'undefined' && /^((?!chrome|android).)*safari/i.test( navigator.userAgent ) === false ) {
+
+                this.textureLoader = new ImageBitmapLoader( this.options.manager );
+
+            } else {
+
+                this.textureLoader = new TextureLoader( this.options.manager );
+
+            }
+
+            this.textureLoader.setCrossOrigin( this.options.crossOrigin );
+            this.textureLoader.setRequestHeader( this.options.requestHeader );
+
+            this.fileLoader = new FileLoader( this.options.manager );
+            this.fileLoader.setResponseType( 'arraybuffer' );
+
+            if ( this.options.crossOrigin === 'use-credentials' ) {
+
+                this.fileLoader.setWithCredentials( true );
+
+            }
+
+        }
+
+        setExtensions( extensions ) {
+
+            this.extensions = extensions;
+
+        }
+
+        setPlugins( plugins ) {
+
+            this.plugins = plugins;
+
+        }
+
+        parse( onLoad, onError ) {
+
+            const parser = this;
+            const json = this.json;
+            const extensions = this.extensions;
+
+            // Clear the loader cache
+            this.cache.removeAll();
+
+            // Mark the special nodes/meshes in json for efficient parse
+            this._invokeAll( function ( ext ) {
+
+                return ext._markDefs && ext._markDefs();
+
+            } );
+
+            Promise.all( this._invokeAll( function ( ext ) {
+
+                return ext.beforeRoot && ext.beforeRoot();
+
+            } ) ).then( function () {
+
+                return Promise.all( [
+
+                    parser.getDependencies( 'scene' ),
+                    parser.getDependencies( 'animation' ),
+                    parser.getDependencies( 'camera' ),
+
+                ] );
+
+            } ).then( function ( dependencies ) {
+
+                const result = {
+                    scene: dependencies[ 0 ][ json.scene || 0 ],
+                    scenes: dependencies[ 0 ],
+                    animations: dependencies[ 1 ],
+                    cameras: dependencies[ 2 ],
+                    asset: json.asset,
+                    parser: parser,
+                    userData: {}
+                };
+
+                addUnknownExtensionsToUserData( extensions, result, json );
+
+                assignExtrasToUserData( result, json );
+
+                Promise.all( parser._invokeAll( function ( ext ) {
+
+                    return ext.afterRoot && ext.afterRoot( result );
+
+                } ) ).then( function () {
+
+                    onLoad( result );
+
+                } );
+
+            } ).catch( onError );
+
+        }
+
+        /**
+         * Marks the special nodes/meshes in json for efficient parse.
+         */
+        _markDefs() {
+
+            const nodeDefs = this.json.nodes || [];
+            const skinDefs = this.json.skins || [];
+            const meshDefs = this.json.meshes || [];
+
+            // Nothing in the node definition indicates whether it is a Bone or an
+            // Object3D. Use the skins' joint references to mark bones.
+            for ( let skinIndex = 0, skinLength = skinDefs.length; skinIndex < skinLength; skinIndex ++ ) {
+
+                const joints = skinDefs[ skinIndex ].joints;
+
+                for ( let i = 0, il = joints.length; i < il; i ++ ) {
+
+                    nodeDefs[ joints[ i ] ].isBone = true;
+
+                }
+
+            }
+
+            // Iterate over all nodes, marking references to shared resources,
+            // as well as skeleton joints.
+            for ( let nodeIndex = 0, nodeLength = nodeDefs.length; nodeIndex < nodeLength; nodeIndex ++ ) {
+
+                const nodeDef = nodeDefs[ nodeIndex ];
+
+                if ( nodeDef.mesh !== undefined ) {
+
+                    this._addNodeRef( this.meshCache, nodeDef.mesh );
+
+                    // Nothing in the mesh definition indicates whether it is
+                    // a SkinnedMesh or Mesh. Use the node's mesh reference
+                    // to mark SkinnedMesh if node has skin.
+                    if ( nodeDef.skin !== undefined ) {
+
+                        meshDefs[ nodeDef.mesh ].isSkinnedMesh = true;
+
+                    }
+
+                }
+
+                if ( nodeDef.camera !== undefined ) {
+
+                    this._addNodeRef( this.cameraCache, nodeDef.camera );
+
+                }
+
+            }
+
+        }
+
+        /**
+         * Counts references to shared node / Object3D resources. These resources
+         * can be reused, or "instantiated", at multiple nodes in the scene
+         * hierarchy. Mesh, Camera, and Light instances are instantiated and must
+         * be marked. Non-scenegraph resources (like Materials, Geometries, and
+         * Textures) can be reused directly and are not marked here.
+         *
+         * Example: CesiumMilkTruck sample model reuses "Wheel" meshes.
+         */
+        _addNodeRef( cache, index ) {
+
+            if ( index === undefined ) return;
+
+            if ( cache.refs[ index ] === undefined ) {
+
+                cache.refs[ index ] = cache.uses[ index ] = 0;
+
+            }
+
+            cache.refs[ index ] ++;
+
+        }
+
+        /** Returns a reference to a shared resource, cloning it if necessary. */
+        _getNodeRef( cache, index, object ) {
+
+            if ( cache.refs[ index ] <= 1 ) return object;
+
+            const ref = object.clone();
+
+            // Propagates mappings to the cloned object, prevents mappings on the
+            // original object from being lost.
+            const updateMappings = ( original, clone ) => {
+
+                const mappings = this.associations.get( original );
+                if ( mappings != null ) {
+
+                    this.associations.set( clone, mappings );
+
+                }
+
+                for ( const [ i, child ] of original.children.entries() ) {
+
+                    updateMappings( child, clone.children[ i ] );
+
+                }
+
+            };
+
+            updateMappings( object, ref );
+
+            ref.name += '_instance_' + ( cache.uses[ index ] ++ );
+
+            return ref;
+
+        }
+
+        _invokeOne( func ) {
+
+            const extensions = Object.values( this.plugins );
+            extensions.push( this );
+
+            for ( let i = 0; i < extensions.length; i ++ ) {
+
+                const result = func( extensions[ i ] );
+
+                if ( result ) return result;
+
+            }
+
+            return null;
+
+        }
+
+        _invokeAll( func ) {
+
+            const extensions = Object.values( this.plugins );
+            extensions.unshift( this );
+
+            const pending = [];
+
+            for ( let i = 0; i < extensions.length; i ++ ) {
+
+                const result = func( extensions[ i ] );
+
+                if ( result ) pending.push( result );
+
+            }
+
+            return pending;
+
+        }
+
+        /**
+         * Requests the specified dependency asynchronously, with caching.
+         * @param {string} type
+         * @param {number} index
+         * @return {Promise<Object3D|Material|THREE.Texture|AnimationClip|ArrayBuffer|Object>}
+         */
+        getDependency( type, index ) {
+
+            const cacheKey = type + ':' + index;
+            let dependency = this.cache.get( cacheKey );
+
+            if ( ! dependency ) {
+
+                switch ( type ) {
+
+                    case 'scene':
+                        dependency = this.loadScene( index );
+                        break;
+
+                    case 'node':
+                        dependency = this.loadNode( index );
+                        break;
+
+                    case 'mesh':
+                        dependency = this._invokeOne( function ( ext ) {
+
+                            return ext.loadMesh && ext.loadMesh( index );
+
+                        } );
+                        break;
+
+                    case 'accessor':
+                        dependency = this.loadAccessor( index );
+                        break;
+
+                    case 'bufferView':
+                        dependency = this._invokeOne( function ( ext ) {
+
+                            return ext.loadBufferView && ext.loadBufferView( index );
+
+                        } );
+                        break;
+
+                    case 'buffer':
+                        dependency = this.loadBuffer( index );
+                        break;
+
+                    case 'material':
+                        dependency = this._invokeOne( function ( ext ) {
+
+                            return ext.loadMaterial && ext.loadMaterial( index );
+
+                        } );
+                        break;
+
+                    case 'texture':
+                        dependency = this._invokeOne( function ( ext ) {
+
+                            return ext.loadTexture && ext.loadTexture( index );
+
+                        } );
+                        break;
+
+                    case 'skin':
+                        dependency = this.loadSkin( index );
+                        break;
+
+                    case 'animation':
+                        dependency = this.loadAnimation( index );
+                        break;
+
+                    case 'camera':
+                        dependency = this.loadCamera( index );
+                        break;
+
+                    default:
+                        throw new Error( 'Unknown type: ' + type );
+
+                }
+
+                this.cache.add( cacheKey, dependency );
+
+            }
+
+            return dependency;
+
+        }
+
+        /**
+         * Requests all dependencies of the specified type asynchronously, with caching.
+         * @param {string} type
+         * @return {Promise<Array<Object>>}
+         */
+        getDependencies( type ) {
+
+            let dependencies = this.cache.get( type );
+
+            if ( ! dependencies ) {
+
+                const parser = this;
+                const defs = this.json[ type + ( type === 'mesh' ? 'es' : 's' ) ] || [];
+
+                dependencies = Promise.all( defs.map( function ( def, index ) {
+
+                    return parser.getDependency( type, index );
+
+                } ) );
+
+                this.cache.add( type, dependencies );
+
+            }
+
+            return dependencies;
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#buffers-and-buffer-views
+         * @param {number} bufferIndex
+         * @return {Promise<ArrayBuffer>}
+         */
+        loadBuffer( bufferIndex ) {
+
+            const bufferDef = this.json.buffers[ bufferIndex ];
+            const loader = this.fileLoader;
+
+            if ( bufferDef.type && bufferDef.type !== 'arraybuffer' ) {
+
+                throw new Error( 'THREE.GLTFLoader: ' + bufferDef.type + ' buffer type is not supported.' );
+
+            }
+
+            // If present, GLB container is required to be the first buffer.
+            if ( bufferDef.uri === undefined && bufferIndex === 0 ) {
+
+                return Promise.resolve( this.extensions[ EXTENSIONS.KHR_BINARY_GLTF ].body );
+
+            }
+
+            const options = this.options;
+
+            return new Promise( function ( resolve, reject ) {
+
+                loader.load( LoaderUtils.resolveURL( bufferDef.uri, options.path ), resolve, undefined, function () {
+
+                    reject( new Error( 'THREE.GLTFLoader: Failed to load buffer "' + bufferDef.uri + '".' ) );
+
+                } );
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#buffers-and-buffer-views
+         * @param {number} bufferViewIndex
+         * @return {Promise<ArrayBuffer>}
+         */
+        loadBufferView( bufferViewIndex ) {
+
+            const bufferViewDef = this.json.bufferViews[ bufferViewIndex ];
+
+            return this.getDependency( 'buffer', bufferViewDef.buffer ).then( function ( buffer ) {
+
+                const byteLength = bufferViewDef.byteLength || 0;
+                const byteOffset = bufferViewDef.byteOffset || 0;
+                return buffer.slice( byteOffset, byteOffset + byteLength );
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#accessors
+         * @param {number} accessorIndex
+         * @return {Promise<BufferAttribute|InterleavedBufferAttribute>}
+         */
+        loadAccessor( accessorIndex ) {
+
+            const parser = this;
+            const json = this.json;
+
+            const accessorDef = this.json.accessors[ accessorIndex ];
+
+            if ( accessorDef.bufferView === undefined && accessorDef.sparse === undefined ) {
+
+                // Ignore empty accessors, which may be used to declare runtime
+                // information about attributes coming from another source (e.g. Draco
+                // compression extension).
+                return Promise.resolve( null );
+
+            }
+
+            const pendingBufferViews = [];
+
+            if ( accessorDef.bufferView !== undefined ) {
+
+                pendingBufferViews.push( this.getDependency( 'bufferView', accessorDef.bufferView ) );
+
+            } else {
+
+                pendingBufferViews.push( null );
+
+            }
+
+            if ( accessorDef.sparse !== undefined ) {
+
+                pendingBufferViews.push( this.getDependency( 'bufferView', accessorDef.sparse.indices.bufferView ) );
+                pendingBufferViews.push( this.getDependency( 'bufferView', accessorDef.sparse.values.bufferView ) );
+
+            }
+
+            return Promise.all( pendingBufferViews ).then( function ( bufferViews ) {
+
+                const bufferView = bufferViews[ 0 ];
+
+                const itemSize = WEBGL_TYPE_SIZES[ accessorDef.type ];
+                const TypedArray = WEBGL_COMPONENT_TYPES[ accessorDef.componentType ];
+
+                // For VEC3: itemSize is 3, elementBytes is 4, itemBytes is 12.
+                const elementBytes = TypedArray.BYTES_PER_ELEMENT;
+                const itemBytes = elementBytes * itemSize;
+                const byteOffset = accessorDef.byteOffset || 0;
+                const byteStride = accessorDef.bufferView !== undefined ? json.bufferViews[ accessorDef.bufferView ].byteStride : undefined;
+                const normalized = accessorDef.normalized === true;
+                let array, bufferAttribute;
+
+                // The buffer is not interleaved if the stride is the item size in bytes.
+                if ( byteStride && byteStride !== itemBytes ) {
+
+                    // Each "slice" of the buffer, as defined by 'count' elements of 'byteStride' bytes, gets its own InterleavedBuffer
+                    // This makes sure that IBA.count reflects accessor.count properly
+                    const ibSlice = Math.floor( byteOffset / byteStride );
+                    const ibCacheKey = 'InterleavedBuffer:' + accessorDef.bufferView + ':' + accessorDef.componentType + ':' + ibSlice + ':' + accessorDef.count;
+                    let ib = parser.cache.get( ibCacheKey );
+
+                    if ( ! ib ) {
+
+                        array = new TypedArray( bufferView, ibSlice * byteStride, accessorDef.count * byteStride / elementBytes );
+
+                        // Integer parameters to IB/IBA are in array elements, not bytes.
+                        ib = new InterleavedBuffer( array, byteStride / elementBytes );
+
+                        parser.cache.add( ibCacheKey, ib );
+
+                    }
+
+                    bufferAttribute = new InterleavedBufferAttribute( ib, itemSize, ( byteOffset % byteStride ) / elementBytes, normalized );
+
+                } else {
+
+                    if ( bufferView === null ) {
+
+                        array = new TypedArray( accessorDef.count * itemSize );
+
+                    } else {
+
+                        array = new TypedArray( bufferView, byteOffset, accessorDef.count * itemSize );
+
+                    }
+
+                    bufferAttribute = new BufferAttribute( array, itemSize, normalized );
+
+                }
+
+                // https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#sparse-accessors
+                if ( accessorDef.sparse !== undefined ) {
+
+                    const itemSizeIndices = WEBGL_TYPE_SIZES.SCALAR;
+                    const TypedArrayIndices = WEBGL_COMPONENT_TYPES[ accessorDef.sparse.indices.componentType ];
+
+                    const byteOffsetIndices = accessorDef.sparse.indices.byteOffset || 0;
+                    const byteOffsetValues = accessorDef.sparse.values.byteOffset || 0;
+
+                    const sparseIndices = new TypedArrayIndices( bufferViews[ 1 ], byteOffsetIndices, accessorDef.sparse.count * itemSizeIndices );
+                    const sparseValues = new TypedArray( bufferViews[ 2 ], byteOffsetValues, accessorDef.sparse.count * itemSize );
+
+                    if ( bufferView !== null ) {
+
+                        // Avoid modifying the original ArrayBuffer, if the bufferView wasn't initialized with zeroes.
+                        bufferAttribute = new BufferAttribute( bufferAttribute.array.slice(), bufferAttribute.itemSize, bufferAttribute.normalized );
+
+                    }
+
+                    for ( let i = 0, il = sparseIndices.length; i < il; i ++ ) {
+
+                        const index = sparseIndices[ i ];
+
+                        bufferAttribute.setX( index, sparseValues[ i * itemSize ] );
+                        if ( itemSize >= 2 ) bufferAttribute.setY( index, sparseValues[ i * itemSize + 1 ] );
+                        if ( itemSize >= 3 ) bufferAttribute.setZ( index, sparseValues[ i * itemSize + 2 ] );
+                        if ( itemSize >= 4 ) bufferAttribute.setW( index, sparseValues[ i * itemSize + 3 ] );
+                        if ( itemSize >= 5 ) throw new Error( 'THREE.GLTFLoader: Unsupported itemSize in sparse BufferAttribute.' );
+
+                    }
+
+                }
+
+                return bufferAttribute;
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#textures
+         * @param {number} textureIndex
+         * @return {Promise<THREE.Texture>}
+         */
+        loadTexture( textureIndex ) {
+
+            const json = this.json;
+            const options = this.options;
+            const textureDef = json.textures[ textureIndex ];
+            const sourceIndex = textureDef.source;
+            const sourceDef = json.images[ sourceIndex ];
+
+            let loader = this.textureLoader;
+
+            if ( sourceDef.uri ) {
+
+                const handler = options.manager.getHandler( sourceDef.uri );
+                if ( handler !== null ) loader = handler;
+
+            }
+
+            return this.loadTextureImage( textureIndex, sourceIndex, loader );
+
+        }
+
+        loadTextureImage( textureIndex, sourceIndex, loader ) {
+
+            const parser = this;
+            const json = this.json;
+
+            const textureDef = json.textures[ textureIndex ];
+            const sourceDef = json.images[ sourceIndex ];
+
+            const cacheKey = ( sourceDef.uri || sourceDef.bufferView ) + ':' + textureDef.sampler;
+
+            if ( this.textureCache[ cacheKey ] ) {
+
+                // See https://github.com/mrdoob/three.js/issues/21559.
+                return this.textureCache[ cacheKey ];
+
+            }
+
+            const promise = this.loadImageSource( sourceIndex, loader ).then( function ( texture ) {
+
+                texture.flipY = false;
+
+                if ( textureDef.name ) texture.name = textureDef.name;
+
+                const samplers = json.samplers || {};
+                const sampler = samplers[ textureDef.sampler ] || {};
+
+                texture.magFilter = WEBGL_FILTERS[ sampler.magFilter ] || LinearFilter;
+                texture.minFilter = WEBGL_FILTERS[ sampler.minFilter ] || LinearMipmapLinearFilter;
+                texture.wrapS = WEBGL_WRAPPINGS[ sampler.wrapS ] || RepeatWrapping;
+                texture.wrapT = WEBGL_WRAPPINGS[ sampler.wrapT ] || RepeatWrapping;
+
+                parser.associations.set( texture, { textures: textureIndex } );
+
+                return texture;
+
+            } ).catch( function () {
+
+                return null;
+
+            } );
+
+            this.textureCache[ cacheKey ] = promise;
+
+            return promise;
+
+        }
+
+        loadImageSource( sourceIndex, loader ) {
+
+            const parser = this;
+            const json = this.json;
+            const options = this.options;
+
+            if ( this.sourceCache[ sourceIndex ] !== undefined ) {
+
+                return this.sourceCache[ sourceIndex ].then( ( texture ) => texture.clone() );
+
+            }
+
+            const sourceDef = json.images[ sourceIndex ];
+
+            const URL = self.URL || self.webkitURL;
+
+            let sourceURI = sourceDef.uri || '';
+            let isObjectURL = false;
+
+            if ( sourceDef.bufferView !== undefined ) {
+
+                // Load binary image data from bufferView, if provided.
+
+                sourceURI = parser.getDependency( 'bufferView', sourceDef.bufferView ).then( function ( bufferView ) {
+
+                    isObjectURL = true;
+                    const blob = new Blob( [ bufferView ], { type: sourceDef.mimeType } );
+                    sourceURI = URL.createObjectURL( blob );
+                    return sourceURI;
+
+                } );
+
+            } else if ( sourceDef.uri === undefined ) {
+
+                throw new Error( 'THREE.GLTFLoader: Image ' + sourceIndex + ' is missing URI and bufferView' );
+
+            }
+
+            const promise = Promise.resolve( sourceURI ).then( function ( sourceURI ) {
+
+                return new Promise( function ( resolve, reject ) {
+
+                    let onLoad = resolve;
+
+                    if ( loader.isImageBitmapLoader === true ) {
+
+                        onLoad = function ( imageBitmap ) {
+
+                            const texture = new Texture( imageBitmap );
+                            texture.needsUpdate = true;
+
+                            resolve( texture );
+
+                        };
+
+                    }
+
+                    loader.load( LoaderUtils.resolveURL( sourceURI, options.path ), onLoad, undefined, reject );
+
+                } );
+
+            } ).then( function ( texture ) {
+
+                // Clean up resources and configure Texture.
+
+                if ( isObjectURL === true ) {
+
+                    URL.revokeObjectURL( sourceURI );
+
+                }
+
+                texture.userData.mimeType = sourceDef.mimeType || getImageURIMimeType( sourceDef.uri );
+
+                return texture;
+
+            } ).catch( function ( error ) {
+
+                console.error( 'THREE.GLTFLoader: Couldn\'t load texture', sourceURI );
+                throw error;
+
+            } );
+
+            this.sourceCache[ sourceIndex ] = promise;
+            return promise;
+
+        }
+
+        /**
+         * Asynchronously assigns a texture to the given material parameters.
+         * @param {Object} materialParams
+         * @param {string} mapName
+         * @param {Object} mapDef
+         * @return {Promise<Texture>}
+         */
+        assignTexture( materialParams, mapName, mapDef, encoding ) {
+
+            const parser = this;
+
+            return this.getDependency( 'texture', mapDef.index ).then( function ( texture ) {
+
+                // Materials sample aoMap from UV set 1 and other maps from UV set 0 - this can't be configured
+                // However, we will copy UV set 0 to UV set 1 on demand for aoMap
+                if ( mapDef.texCoord !== undefined && mapDef.texCoord != 0 && ! ( mapName === 'aoMap' && mapDef.texCoord == 1 ) ) {
+
+                    console.warn( 'THREE.GLTFLoader: Custom UV set ' + mapDef.texCoord + ' for texture ' + mapName + ' not yet supported.' );
+
+                }
+
+                if ( parser.extensions[ EXTENSIONS.KHR_TEXTURE_TRANSFORM ] ) {
+
+                    const transform = mapDef.extensions !== undefined ? mapDef.extensions[ EXTENSIONS.KHR_TEXTURE_TRANSFORM ] : undefined;
+
+                    if ( transform ) {
+
+                        const gltfReference = parser.associations.get( texture );
+                        texture = parser.extensions[ EXTENSIONS.KHR_TEXTURE_TRANSFORM ].extendTexture( texture, transform );
+                        parser.associations.set( texture, gltfReference );
+
+                    }
+
+                }
+
+                if ( encoding !== undefined ) {
+
+                    texture.encoding = encoding;
+
+                }
+
+                materialParams[ mapName ] = texture;
+
+                return texture;
+
+            } );
+
+        }
+
+        /**
+         * Assigns final material to a Mesh, Line, or Points instance. The instance
+         * already has a material (generated from the glTF material options alone)
+         * but reuse of the same glTF material may require multiple threejs materials
+         * to accommodate different primitive types, defines, etc. New materials will
+         * be created if necessary, and reused from a cache.
+         * @param  {Object3D} mesh Mesh, Line, or Points instance.
+         */
+        assignFinalMaterial( mesh ) {
+
+            const geometry = mesh.geometry;
+            let material = mesh.material;
+
+            const useDerivativeTangents = geometry.attributes.tangent === undefined;
+            const useVertexColors = geometry.attributes.color !== undefined;
+            const useFlatShading = geometry.attributes.normal === undefined;
+
+            if ( mesh.isPoints ) {
+
+                const cacheKey = 'PointsMaterial:' + material.uuid;
+
+                let pointsMaterial = this.cache.get( cacheKey );
+
+                if ( ! pointsMaterial ) {
+
+                    pointsMaterial = new PointsMaterial();
+                    Material.prototype.copy.call( pointsMaterial, material );
+                    pointsMaterial.color.copy( material.color );
+                    pointsMaterial.map = material.map;
+                    pointsMaterial.sizeAttenuation = false; // glTF spec says points should be 1px
+
+                    this.cache.add( cacheKey, pointsMaterial );
+
+                }
+
+                material = pointsMaterial;
+
+            } else if ( mesh.isLine ) {
+
+                const cacheKey = 'LineBasicMaterial:' + material.uuid;
+
+                let lineMaterial = this.cache.get( cacheKey );
+
+                if ( ! lineMaterial ) {
+
+                    lineMaterial = new LineBasicMaterial();
+                    Material.prototype.copy.call( lineMaterial, material );
+                    lineMaterial.color.copy( material.color );
+
+                    this.cache.add( cacheKey, lineMaterial );
+
+                }
+
+                material = lineMaterial;
+
+            }
+
+            // Clone the material if it will be modified
+            if ( useDerivativeTangents || useVertexColors || useFlatShading ) {
+
+                let cacheKey = 'ClonedMaterial:' + material.uuid + ':';
+
+                if ( material.isGLTFSpecularGlossinessMaterial ) cacheKey += 'specular-glossiness:';
+                if ( useDerivativeTangents ) cacheKey += 'derivative-tangents:';
+                if ( useVertexColors ) cacheKey += 'vertex-colors:';
+                if ( useFlatShading ) cacheKey += 'flat-shading:';
+
+                let cachedMaterial = this.cache.get( cacheKey );
+
+                if ( ! cachedMaterial ) {
+
+                    cachedMaterial = material.clone();
+
+                    if ( useVertexColors ) cachedMaterial.vertexColors = true;
+                    if ( useFlatShading ) cachedMaterial.flatShading = true;
+
+                    if ( useDerivativeTangents ) {
+
+                        // https://github.com/mrdoob/three.js/issues/11438#issuecomment-507003995
+                        if ( cachedMaterial.normalScale ) cachedMaterial.normalScale.y *= - 1;
+                        if ( cachedMaterial.clearcoatNormalScale ) cachedMaterial.clearcoatNormalScale.y *= - 1;
+
+                    }
+
+                    this.cache.add( cacheKey, cachedMaterial );
+
+                    this.associations.set( cachedMaterial, this.associations.get( material ) );
+
+                }
+
+                material = cachedMaterial;
+
+            }
+
+            // workarounds for mesh and geometry
+
+            if ( material.aoMap && geometry.attributes.uv2 === undefined && geometry.attributes.uv !== undefined ) {
+
+                geometry.setAttribute( 'uv2', geometry.attributes.uv );
+
+            }
+
+            mesh.material = material;
+
+        }
+
+        getMaterialType( /* materialIndex */ ) {
+
+            return MeshStandardMaterial;
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#materials
+         * @param {number} materialIndex
+         * @return {Promise<Material>}
+         */
+        loadMaterial( materialIndex ) {
+
+            const parser = this;
+            const json = this.json;
+            const extensions = this.extensions;
+            const materialDef = json.materials[ materialIndex ];
+
+            let materialType;
+            const materialParams = {};
+            const materialExtensions = materialDef.extensions || {};
+
+            const pending = [];
+
+            if ( materialExtensions[ EXTENSIONS.KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS ] ) {
+
+                const sgExtension = extensions[ EXTENSIONS.KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS ];
+                materialType = sgExtension.getMaterialType();
+                pending.push( sgExtension.extendParams( materialParams, materialDef, parser ) );
+
+            } else if ( materialExtensions[ EXTENSIONS.KHR_MATERIALS_UNLIT ] ) {
+
+                const kmuExtension = extensions[ EXTENSIONS.KHR_MATERIALS_UNLIT ];
+                materialType = kmuExtension.getMaterialType();
+                pending.push( kmuExtension.extendParams( materialParams, materialDef, parser ) );
+
+            } else {
+
+                // Specification:
+                // https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#metallic-roughness-material
+
+                const metallicRoughness = materialDef.pbrMetallicRoughness || {};
+
+                materialParams.color = new Color( 1.0, 1.0, 1.0 );
+                materialParams.opacity = 1.0;
+
+                if ( Array.isArray( metallicRoughness.baseColorFactor ) ) {
+
+                    const array = metallicRoughness.baseColorFactor;
+
+                    materialParams.color.fromArray( array );
+                    materialParams.opacity = array[ 3 ];
+
+                }
+
+                if ( metallicRoughness.baseColorTexture !== undefined ) {
+
+                    pending.push( parser.assignTexture( materialParams, 'map', metallicRoughness.baseColorTexture, sRGBEncoding ) );
+
+                }
+
+                materialParams.metalness = metallicRoughness.metallicFactor !== undefined ? metallicRoughness.metallicFactor : 1.0;
+                materialParams.roughness = metallicRoughness.roughnessFactor !== undefined ? metallicRoughness.roughnessFactor : 1.0;
+
+                if ( metallicRoughness.metallicRoughnessTexture !== undefined ) {
+
+                    pending.push( parser.assignTexture( materialParams, 'metalnessMap', metallicRoughness.metallicRoughnessTexture ) );
+                    pending.push( parser.assignTexture( materialParams, 'roughnessMap', metallicRoughness.metallicRoughnessTexture ) );
+
+                }
+
+                materialType = this._invokeOne( function ( ext ) {
+
+                    return ext.getMaterialType && ext.getMaterialType( materialIndex );
+
+                } );
+
+                pending.push( Promise.all( this._invokeAll( function ( ext ) {
+
+                    return ext.extendMaterialParams && ext.extendMaterialParams( materialIndex, materialParams );
+
+                } ) ) );
+
+            }
+
+            if ( materialDef.doubleSided === true ) {
+
+                materialParams.side = DoubleSide;
+
+            }
+
+            const alphaMode = materialDef.alphaMode || ALPHA_MODES.OPAQUE;
+
+            if ( alphaMode === ALPHA_MODES.BLEND ) {
+
+                materialParams.transparent = true;
+
+                // See: https://github.com/mrdoob/three.js/issues/17706
+                materialParams.depthWrite = false;
+
+            } else {
+
+                materialParams.transparent = false;
+
+                if ( alphaMode === ALPHA_MODES.MASK ) {
+
+                    materialParams.alphaTest = materialDef.alphaCutoff !== undefined ? materialDef.alphaCutoff : 0.5;
+
+                }
+
+            }
+
+            if ( materialDef.normalTexture !== undefined && materialType !== MeshBasicMaterial ) {
+
+                pending.push( parser.assignTexture( materialParams, 'normalMap', materialDef.normalTexture ) );
+
+                materialParams.normalScale = new Vector2( 1, 1 );
+
+                if ( materialDef.normalTexture.scale !== undefined ) {
+
+                    const scale = materialDef.normalTexture.scale;
+
+                    materialParams.normalScale.set( scale, scale );
+
+                }
+
+            }
+
+            if ( materialDef.occlusionTexture !== undefined && materialType !== MeshBasicMaterial ) {
+
+                pending.push( parser.assignTexture( materialParams, 'aoMap', materialDef.occlusionTexture ) );
+
+                if ( materialDef.occlusionTexture.strength !== undefined ) {
+
+                    materialParams.aoMapIntensity = materialDef.occlusionTexture.strength;
+
+                }
+
+            }
+
+            if ( materialDef.emissiveFactor !== undefined && materialType !== MeshBasicMaterial ) {
+
+                materialParams.emissive = new Color().fromArray( materialDef.emissiveFactor );
+
+            }
+
+            if ( materialDef.emissiveTexture !== undefined && materialType !== MeshBasicMaterial ) {
+
+                pending.push( parser.assignTexture( materialParams, 'emissiveMap', materialDef.emissiveTexture, sRGBEncoding ) );
+
+            }
+
+            return Promise.all( pending ).then( function () {
+
+                let material;
+
+                if ( materialType === GLTFMeshStandardSGMaterial ) {
+
+                    material = extensions[ EXTENSIONS.KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS ].createMaterial( materialParams );
+
+                } else {
+
+                    material = new materialType( materialParams );
+
+                }
+
+                if ( materialDef.name ) material.name = materialDef.name;
+
+                assignExtrasToUserData( material, materialDef );
+
+                parser.associations.set( material, { materials: materialIndex } );
+
+                if ( materialDef.extensions ) addUnknownExtensionsToUserData( extensions, material, materialDef );
+
+                return material;
+
+            } );
+
+        }
+
+        /** When Object3D instances are targeted by animation, they need unique names. */
+        createUniqueName( originalName ) {
+
+            const sanitizedName = PropertyBinding.sanitizeNodeName( originalName || '' );
+
+            let name = sanitizedName;
+
+            for ( let i = 1; this.nodeNamesUsed[ name ]; ++ i ) {
+
+                name = sanitizedName + '_' + i;
+
+            }
+
+            this.nodeNamesUsed[ name ] = true;
+
+            return name;
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#geometry
+         *
+         * Creates BufferGeometries from primitives.
+         *
+         * @param {Array<GLTF.Primitive>} primitives
+         * @return {Promise<Array<BufferGeometry>>}
+         */
+        loadGeometries( primitives ) {
+
+            const parser = this;
+            const extensions = this.extensions;
+            const cache = this.primitiveCache;
+
+            function createDracoPrimitive( primitive ) {
+
+                return extensions[ EXTENSIONS.KHR_DRACO_MESH_COMPRESSION ]
+                    .decodePrimitive( primitive, parser )
+                    .then( function ( geometry ) {
+
+                        return addPrimitiveAttributes( geometry, primitive, parser );
+
+                    } );
+
+            }
+
+            const pending = [];
+
+            for ( let i = 0, il = primitives.length; i < il; i ++ ) {
+
+                const primitive = primitives[ i ];
+                const cacheKey = createPrimitiveKey( primitive );
+
+                // See if we've already created this geometry
+                const cached = cache[ cacheKey ];
+
+                if ( cached ) {
+
+                    // Use the cached geometry if it exists
+                    pending.push( cached.promise );
+
+                } else {
+
+                    let geometryPromise;
+
+                    if ( primitive.extensions && primitive.extensions[ EXTENSIONS.KHR_DRACO_MESH_COMPRESSION ] ) {
+
+                        // Use DRACO geometry if available
+                        geometryPromise = createDracoPrimitive( primitive );
+
+                    } else {
+
+                        // Otherwise create a new geometry
+                        geometryPromise = addPrimitiveAttributes( new BufferGeometry(), primitive, parser );
+
+                    }
+
+                    // Cache this geometry
+                    cache[ cacheKey ] = { primitive: primitive, promise: geometryPromise };
+
+                    pending.push( geometryPromise );
+
+                }
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#meshes
+         * @param {number} meshIndex
+         * @return {Promise<Group|Mesh|SkinnedMesh>}
+         */
+        loadMesh( meshIndex ) {
+
+            const parser = this;
+            const json = this.json;
+            const extensions = this.extensions;
+
+            const meshDef = json.meshes[ meshIndex ];
+            const primitives = meshDef.primitives;
+
+            const pending = [];
+
+            for ( let i = 0, il = primitives.length; i < il; i ++ ) {
+
+                const material = primitives[ i ].material === undefined
+                    ? createDefaultMaterial( this.cache )
+                    : this.getDependency( 'material', primitives[ i ].material );
+
+                pending.push( material );
+
+            }
+
+            pending.push( parser.loadGeometries( primitives ) );
+
+            return Promise.all( pending ).then( function ( results ) {
+
+                const materials = results.slice( 0, results.length - 1 );
+                const geometries = results[ results.length - 1 ];
+
+                const meshes = [];
+
+                for ( let i = 0, il = geometries.length; i < il; i ++ ) {
+
+                    const geometry = geometries[ i ];
+                    const primitive = primitives[ i ];
+
+                    // 1. create Mesh
+
+                    let mesh;
+
+                    const material = materials[ i ];
+
+                    if ( primitive.mode === WEBGL_CONSTANTS.TRIANGLES ||
+                            primitive.mode === WEBGL_CONSTANTS.TRIANGLE_STRIP ||
+                            primitive.mode === WEBGL_CONSTANTS.TRIANGLE_FAN ||
+                            primitive.mode === undefined ) {
+
+                        // .isSkinnedMesh isn't in glTF spec. See ._markDefs()
+                        mesh = meshDef.isSkinnedMesh === true
+                            ? new SkinnedMesh( geometry, material )
+                            : new Mesh( geometry, material );
+
+                        if ( mesh.isSkinnedMesh === true && ! mesh.geometry.attributes.skinWeight.normalized ) {
+
+                            // we normalize floating point skin weight array to fix malformed assets (see #15319)
+                            // it's important to skip this for non-float32 data since normalizeSkinWeights assumes non-normalized inputs
+                            mesh.normalizeSkinWeights();
+
+                        }
+
+                        if ( primitive.mode === WEBGL_CONSTANTS.TRIANGLE_STRIP ) {
+
+                            mesh.geometry = toTrianglesDrawMode( mesh.geometry, TriangleStripDrawMode );
+
+                        } else if ( primitive.mode === WEBGL_CONSTANTS.TRIANGLE_FAN ) {
+
+                            mesh.geometry = toTrianglesDrawMode( mesh.geometry, TriangleFanDrawMode );
+
+                        }
+
+                    } else if ( primitive.mode === WEBGL_CONSTANTS.LINES ) {
+
+                        mesh = new LineSegments( geometry, material );
+
+                    } else if ( primitive.mode === WEBGL_CONSTANTS.LINE_STRIP ) {
+
+                        mesh = new Line( geometry, material );
+
+                    } else if ( primitive.mode === WEBGL_CONSTANTS.LINE_LOOP ) {
+
+                        mesh = new LineLoop( geometry, material );
+
+                    } else if ( primitive.mode === WEBGL_CONSTANTS.POINTS ) {
+
+                        mesh = new Points( geometry, material );
+
+                    } else {
+
+                        throw new Error( 'THREE.GLTFLoader: Primitive mode unsupported: ' + primitive.mode );
+
+                    }
+
+                    if ( Object.keys( mesh.geometry.morphAttributes ).length > 0 ) {
+
+                        updateMorphTargets( mesh, meshDef );
+
+                    }
+
+                    mesh.name = parser.createUniqueName( meshDef.name || ( 'mesh_' + meshIndex ) );
+
+                    assignExtrasToUserData( mesh, meshDef );
+
+                    if ( primitive.extensions ) addUnknownExtensionsToUserData( extensions, mesh, primitive );
+
+                    parser.assignFinalMaterial( mesh );
+
+                    meshes.push( mesh );
+
+                }
+
+                for ( let i = 0, il = meshes.length; i < il; i ++ ) {
+
+                    parser.associations.set( meshes[ i ], {
+                        meshes: meshIndex,
+                        primitives: i
+                    } );
+
+                }
+
+                if ( meshes.length === 1 ) {
+
+                    return meshes[ 0 ];
+
+                }
+
+                const group = new Group();
+
+                parser.associations.set( group, { meshes: meshIndex } );
+
+                for ( let i = 0, il = meshes.length; i < il; i ++ ) {
+
+                    group.add( meshes[ i ] );
+
+                }
+
+                return group;
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#cameras
+         * @param {number} cameraIndex
+         * @return {Promise<THREE.Camera>}
+         */
+        loadCamera( cameraIndex ) {
+
+            let camera;
+            const cameraDef = this.json.cameras[ cameraIndex ];
+            const params = cameraDef[ cameraDef.type ];
+
+            if ( ! params ) {
+
+                console.warn( 'THREE.GLTFLoader: Missing camera parameters.' );
+                return;
+
+            }
+
+            if ( cameraDef.type === 'perspective' ) {
+
+                camera = new PerspectiveCamera( MathUtils.radToDeg( params.yfov ), params.aspectRatio || 1, params.znear || 1, params.zfar || 2e6 );
+
+            } else if ( cameraDef.type === 'orthographic' ) {
+
+                camera = new OrthographicCamera( - params.xmag, params.xmag, params.ymag, - params.ymag, params.znear, params.zfar );
+
+            }
+
+            if ( cameraDef.name ) camera.name = this.createUniqueName( cameraDef.name );
+
+            assignExtrasToUserData( camera, cameraDef );
+
+            return Promise.resolve( camera );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#skins
+         * @param {number} skinIndex
+         * @return {Promise<Object>}
+         */
+        loadSkin( skinIndex ) {
+
+            const skinDef = this.json.skins[ skinIndex ];
+
+            const skinEntry = { joints: skinDef.joints };
+
+            if ( skinDef.inverseBindMatrices === undefined ) {
+
+                return Promise.resolve( skinEntry );
+
+            }
+
+            return this.getDependency( 'accessor', skinDef.inverseBindMatrices ).then( function ( accessor ) {
+
+                skinEntry.inverseBindMatrices = accessor;
+
+                return skinEntry;
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#animations
+         * @param {number} animationIndex
+         * @return {Promise<AnimationClip>}
+         */
+        loadAnimation( animationIndex ) {
+
+            const json = this.json;
+
+            const animationDef = json.animations[ animationIndex ];
+
+            const pendingNodes = [];
+            const pendingInputAccessors = [];
+            const pendingOutputAccessors = [];
+            const pendingSamplers = [];
+            const pendingTargets = [];
+
+            for ( let i = 0, il = animationDef.channels.length; i < il; i ++ ) {
+
+                const channel = animationDef.channels[ i ];
+                const sampler = animationDef.samplers[ channel.sampler ];
+                const target = channel.target;
+                const name = target.node !== undefined ? target.node : target.id; // NOTE: target.id is deprecated.
+                const input = animationDef.parameters !== undefined ? animationDef.parameters[ sampler.input ] : sampler.input;
+                const output = animationDef.parameters !== undefined ? animationDef.parameters[ sampler.output ] : sampler.output;
+
+                pendingNodes.push( this.getDependency( 'node', name ) );
+                pendingInputAccessors.push( this.getDependency( 'accessor', input ) );
+                pendingOutputAccessors.push( this.getDependency( 'accessor', output ) );
+                pendingSamplers.push( sampler );
+                pendingTargets.push( target );
+
+            }
+
+            return Promise.all( [
+
+                Promise.all( pendingNodes ),
+                Promise.all( pendingInputAccessors ),
+                Promise.all( pendingOutputAccessors ),
+                Promise.all( pendingSamplers ),
+                Promise.all( pendingTargets )
+
+            ] ).then( function ( dependencies ) {
+
+                const nodes = dependencies[ 0 ];
+                const inputAccessors = dependencies[ 1 ];
+                const outputAccessors = dependencies[ 2 ];
+                const samplers = dependencies[ 3 ];
+                const targets = dependencies[ 4 ];
+
+                const tracks = [];
+
+                for ( let i = 0, il = nodes.length; i < il; i ++ ) {
+
+                    const node = nodes[ i ];
+                    const inputAccessor = inputAccessors[ i ];
+                    const outputAccessor = outputAccessors[ i ];
+                    const sampler = samplers[ i ];
+                    const target = targets[ i ];
+
+                    if ( node === undefined ) continue;
+
+                    node.updateMatrix();
+                    node.matrixAutoUpdate = true;
+
+                    let TypedKeyframeTrack;
+
+                    switch ( PATH_PROPERTIES[ target.path ] ) {
+
+                        case PATH_PROPERTIES.weights:
+
+                            TypedKeyframeTrack = NumberKeyframeTrack;
+                            break;
+
+                        case PATH_PROPERTIES.rotation:
+
+                            TypedKeyframeTrack = QuaternionKeyframeTrack;
+                            break;
+
+                        case PATH_PROPERTIES.position:
+                        case PATH_PROPERTIES.scale:
+                        default:
+
+                            TypedKeyframeTrack = VectorKeyframeTrack;
+                            break;
+
+                    }
+
+                    const targetName = node.name ? node.name : node.uuid;
+
+                    const interpolation = sampler.interpolation !== undefined ? INTERPOLATION[ sampler.interpolation ] : InterpolateLinear;
+
+                    const targetNames = [];
+
+                    if ( PATH_PROPERTIES[ target.path ] === PATH_PROPERTIES.weights ) {
+
+                        node.traverse( function ( object ) {
+
+                            if ( object.morphTargetInfluences ) {
+
+                                targetNames.push( object.name ? object.name : object.uuid );
+
+                            }
+
+                        } );
+
+                    } else {
+
+                        targetNames.push( targetName );
+
+                    }
+
+                    let outputArray = outputAccessor.array;
+
+                    if ( outputAccessor.normalized ) {
+
+                        const scale = getNormalizedComponentScale( outputArray.constructor );
+                        const scaled = new Float32Array( outputArray.length );
+
+                        for ( let j = 0, jl = outputArray.length; j < jl; j ++ ) {
+
+                            scaled[ j ] = outputArray[ j ] * scale;
+
+                        }
+
+                        outputArray = scaled;
+
+                    }
+
+                    for ( let j = 0, jl = targetNames.length; j < jl; j ++ ) {
+
+                        const track = new TypedKeyframeTrack(
+                            targetNames[ j ] + '.' + PATH_PROPERTIES[ target.path ],
+                            inputAccessor.array,
+                            outputArray,
+                            interpolation
+                        );
+
+                        // Override interpolation with custom factory method.
+                        if ( sampler.interpolation === 'CUBICSPLINE' ) {
+
+                            track.createInterpolant = function InterpolantFactoryMethodGLTFCubicSpline( result ) {
+
+                                // A CUBICSPLINE keyframe in glTF has three output values for each input value,
+                                // representing inTangent, splineVertex, and outTangent. As a result, track.getValueSize()
+                                // must be divided by three to get the interpolant's sampleSize argument.
+
+                                const interpolantType = ( this instanceof QuaternionKeyframeTrack ) ? GLTFCubicSplineQuaternionInterpolant : GLTFCubicSplineInterpolant;
+
+                                return new interpolantType( this.times, this.values, this.getValueSize() / 3, result );
+
+                            };
+
+                            // Mark as CUBICSPLINE. `track.getInterpolation()` doesn't support custom interpolants.
+                            track.createInterpolant.isInterpolantFactoryMethodGLTFCubicSpline = true;
+
+                        }
+
+                        tracks.push( track );
+
+                    }
+
+                }
+
+                const name = animationDef.name ? animationDef.name : 'animation_' + animationIndex;
+
+                return new AnimationClip( name, undefined, tracks );
+
+            } );
+
+        }
+
+        createNodeMesh( nodeIndex ) {
+
+            const json = this.json;
+            const parser = this;
+            const nodeDef = json.nodes[ nodeIndex ];
+
+            if ( nodeDef.mesh === undefined ) return null;
+
+            return parser.getDependency( 'mesh', nodeDef.mesh ).then( function ( mesh ) {
+
+                const node = parser._getNodeRef( parser.meshCache, nodeDef.mesh, mesh );
+
+                // if weights are provided on the node, override weights on the mesh.
+                if ( nodeDef.weights !== undefined ) {
+
+                    node.traverse( function ( o ) {
+
+                        if ( ! o.isMesh ) return;
+
+                        for ( let i = 0, il = nodeDef.weights.length; i < il; i ++ ) {
+
+                            o.morphTargetInfluences[ i ] = nodeDef.weights[ i ];
+
+                        }
+
+                    } );
+
+                }
+
+                return node;
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#nodes-and-hierarchy
+         * @param {number} nodeIndex
+         * @return {Promise<Object3D>}
+         */
+        loadNode( nodeIndex ) {
+
+            const json = this.json;
+            const extensions = this.extensions;
+            const parser = this;
+
+            const nodeDef = json.nodes[ nodeIndex ];
+
+            // reserve node's name before its dependencies, so the root has the intended name.
+            const nodeName = nodeDef.name ? parser.createUniqueName( nodeDef.name ) : '';
+
+            return ( function () {
+
+                const pending = [];
+
+                const meshPromise = parser._invokeOne( function ( ext ) {
+
+                    return ext.createNodeMesh && ext.createNodeMesh( nodeIndex );
+
+                } );
+
+                if ( meshPromise ) {
+
+                    pending.push( meshPromise );
+
+                }
+
+                if ( nodeDef.camera !== undefined ) {
+
+                    pending.push( parser.getDependency( 'camera', nodeDef.camera ).then( function ( camera ) {
+
+                        return parser._getNodeRef( parser.cameraCache, nodeDef.camera, camera );
+
+                    } ) );
+
+                }
+
+                parser._invokeAll( function ( ext ) {
+
+                    return ext.createNodeAttachment && ext.createNodeAttachment( nodeIndex );
+
+                } ).forEach( function ( promise ) {
+
+                    pending.push( promise );
+
+                } );
+
+                return Promise.all( pending );
+
+            }() ).then( function ( objects ) {
+
+                let node;
+
+                // .isBone isn't in glTF spec. See ._markDefs
+                if ( nodeDef.isBone === true ) {
+
+                    node = new Bone();
+
+                } else if ( objects.length > 1 ) {
+
+                    node = new Group();
+
+                } else if ( objects.length === 1 ) {
+
+                    node = objects[ 0 ];
+
+                } else {
+
+                    node = new Object3D();
+
+                }
+
+                if ( node !== objects[ 0 ] ) {
+
+                    for ( let i = 0, il = objects.length; i < il; i ++ ) {
+
+                        node.add( objects[ i ] );
+
+                    }
+
+                }
+
+                if ( nodeDef.name ) {
+
+                    node.userData.name = nodeDef.name;
+                    node.name = nodeName;
+
+                }
+
+                assignExtrasToUserData( node, nodeDef );
+
+                if ( nodeDef.extensions ) addUnknownExtensionsToUserData( extensions, node, nodeDef );
+
+                if ( nodeDef.matrix !== undefined ) {
+
+                    const matrix = new Matrix4();
+                    matrix.fromArray( nodeDef.matrix );
+                    node.applyMatrix4( matrix );
+
+                } else {
+
+                    if ( nodeDef.translation !== undefined ) {
+
+                        node.position.fromArray( nodeDef.translation );
+
+                    }
+
+                    if ( nodeDef.rotation !== undefined ) {
+
+                        node.quaternion.fromArray( nodeDef.rotation );
+
+                    }
+
+                    if ( nodeDef.scale !== undefined ) {
+
+                        node.scale.fromArray( nodeDef.scale );
+
+                    }
+
+                }
+
+                if ( ! parser.associations.has( node ) ) {
+
+                    parser.associations.set( node, {} );
+
+                }
+
+                parser.associations.get( node ).nodes = nodeIndex;
+
+                return node;
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#scenes
+         * @param {number} sceneIndex
+         * @return {Promise<Group>}
+         */
+        loadScene( sceneIndex ) {
+
+            const json = this.json;
+            const extensions = this.extensions;
+            const sceneDef = this.json.scenes[ sceneIndex ];
+            const parser = this;
+
+            // Loader returns Group, not Scene.
+            // See: https://github.com/mrdoob/three.js/issues/18342#issuecomment-578981172
+            const scene = new Group();
+            if ( sceneDef.name ) scene.name = parser.createUniqueName( sceneDef.name );
+
+            assignExtrasToUserData( scene, sceneDef );
+
+            if ( sceneDef.extensions ) addUnknownExtensionsToUserData( extensions, scene, sceneDef );
+
+            const nodeIds = sceneDef.nodes || [];
+
+            const pending = [];
+
+            for ( let i = 0, il = nodeIds.length; i < il; i ++ ) {
+
+                pending.push( buildNodeHierarchy( nodeIds[ i ], scene, json, parser ) );
+
+            }
+
+            return Promise.all( pending ).then( function () {
+
+                // Removes dangling associations, associations that reference a node that
+                // didn't make it into the scene.
+                const reduceAssociations = ( node ) => {
+
+                    const reducedAssociations = new Map();
+
+                    for ( const [ key, value ] of parser.associations ) {
+
+                        if ( key instanceof Material || key instanceof Texture ) {
+
+                            reducedAssociations.set( key, value );
+
+                        }
+
+                    }
+
+                    node.traverse( ( node ) => {
+
+                        const mappings = parser.associations.get( node );
+
+                        if ( mappings != null ) {
+
+                            reducedAssociations.set( node, mappings );
+
+                        }
+
+                    } );
+
+                    return reducedAssociations;
+
+                };
+
+                parser.associations = reduceAssociations( scene );
+
+                return scene;
+
+            } );
+
+        }
+
+    }
+
+    function buildNodeHierarchy( nodeId, parentObject, json, parser ) {
+
+        const nodeDef = json.nodes[ nodeId ];
+
+        return parser.getDependency( 'node', nodeId ).then( function ( node ) {
+
+            if ( nodeDef.skin === undefined ) return node;
+
+            // build skeleton here as well
+
+            let skinEntry;
+
+            return parser.getDependency( 'skin', nodeDef.skin ).then( function ( skin ) {
+
+                skinEntry = skin;
+
+                const pendingJoints = [];
+
+                for ( let i = 0, il = skinEntry.joints.length; i < il; i ++ ) {
+
+                    pendingJoints.push( parser.getDependency( 'node', skinEntry.joints[ i ] ) );
+
+                }
+
+                return Promise.all( pendingJoints );
+
+            } ).then( function ( jointNodes ) {
+
+                node.traverse( function ( mesh ) {
+
+                    if ( ! mesh.isMesh ) return;
+
+                    const bones = [];
+                    const boneInverses = [];
+
+                    for ( let j = 0, jl = jointNodes.length; j < jl; j ++ ) {
+
+                        const jointNode = jointNodes[ j ];
+
+                        if ( jointNode ) {
+
+                            bones.push( jointNode );
+
+                            const mat = new Matrix4();
+
+                            if ( skinEntry.inverseBindMatrices !== undefined ) {
+
+                                mat.fromArray( skinEntry.inverseBindMatrices.array, j * 16 );
+
+                            }
+
+                            boneInverses.push( mat );
+
+                        } else {
+
+                            console.warn( 'THREE.GLTFLoader: Joint "%s" could not be found.', skinEntry.joints[ j ] );
+
+                        }
+
+                    }
+
+                    mesh.bind( new Skeleton( bones, boneInverses ), mesh.matrixWorld );
+
+                } );
+
+                return node;
+
+            } );
+
+        } ).then( function ( node ) {
+
+            // build node hierachy
+
+            parentObject.add( node );
+
+            const pending = [];
+
+            if ( nodeDef.children ) {
+
+                const children = nodeDef.children;
+
+                for ( let i = 0, il = children.length; i < il; i ++ ) {
+
+                    const child = children[ i ];
+                    pending.push( buildNodeHierarchy( child, node, json, parser ) );
+
+                }
+
+            }
+
+            return Promise.all( pending );
+
+        } );
+
+    }
+
+    /**
+     * @param {BufferGeometry} geometry
+     * @param {GLTF.Primitive} primitiveDef
+     * @param {GLTFParser} parser
+     */
+    function computeBounds( geometry, primitiveDef, parser ) {
+
+        const attributes = primitiveDef.attributes;
+
+        const box = new Box3();
+
+        if ( attributes.POSITION !== undefined ) {
+
+            const accessor = parser.json.accessors[ attributes.POSITION ];
+
+            const min = accessor.min;
+            const max = accessor.max;
+
+            // glTF requires 'min' and 'max', but VRM (which extends glTF) currently ignores that requirement.
+
+            if ( min !== undefined && max !== undefined ) {
+
+                box.set(
+                    new Vector3( min[ 0 ], min[ 1 ], min[ 2 ] ),
+                    new Vector3( max[ 0 ], max[ 1 ], max[ 2 ] )
+                );
+
+                if ( accessor.normalized ) {
+
+                    const boxScale = getNormalizedComponentScale( WEBGL_COMPONENT_TYPES[ accessor.componentType ] );
+                    box.min.multiplyScalar( boxScale );
+                    box.max.multiplyScalar( boxScale );
+
+                }
+
+            } else {
+
+                console.warn( 'THREE.GLTFLoader: Missing min/max properties for accessor POSITION.' );
+
+                return;
+
+            }
+
+        } else {
+
+            return;
+
+        }
+
+        const targets = primitiveDef.targets;
+
+        if ( targets !== undefined ) {
+
+            const maxDisplacement = new Vector3();
+            const vector = new Vector3();
+
+            for ( let i = 0, il = targets.length; i < il; i ++ ) {
+
+                const target = targets[ i ];
+
+                if ( target.POSITION !== undefined ) {
+
+                    const accessor = parser.json.accessors[ target.POSITION ];
+                    const min = accessor.min;
+                    const max = accessor.max;
+
+                    // glTF requires 'min' and 'max', but VRM (which extends glTF) currently ignores that requirement.
+
+                    if ( min !== undefined && max !== undefined ) {
+
+                        // we need to get max of absolute components because target weight is [-1,1]
+                        vector.setX( Math.max( Math.abs( min[ 0 ] ), Math.abs( max[ 0 ] ) ) );
+                        vector.setY( Math.max( Math.abs( min[ 1 ] ), Math.abs( max[ 1 ] ) ) );
+                        vector.setZ( Math.max( Math.abs( min[ 2 ] ), Math.abs( max[ 2 ] ) ) );
+
+
+                        if ( accessor.normalized ) {
+
+                            const boxScale = getNormalizedComponentScale( WEBGL_COMPONENT_TYPES[ accessor.componentType ] );
+                            vector.multiplyScalar( boxScale );
+
+                        }
+
+                        // Note: this assumes that the sum of all weights is at most 1. This isn't quite correct - it's more conservative
+                        // to assume that each target can have a max weight of 1. However, for some use cases - notably, when morph targets
+                        // are used to implement key-frame animations and as such only two are active at a time - this results in very large
+                        // boxes. So for now we make a box that's sometimes a touch too small but is hopefully mostly of reasonable size.
+                        maxDisplacement.max( vector );
+
+                    } else {
+
+                        console.warn( 'THREE.GLTFLoader: Missing min/max properties for accessor POSITION.' );
+
+                    }
+
+                }
+
+            }
+
+            // As per comment above this box isn't conservative, but has a reasonable size for a very large number of morph targets.
+            box.expandByVector( maxDisplacement );
+
+        }
+
+        geometry.boundingBox = box;
+
+        const sphere = new Sphere();
+
+        box.getCenter( sphere.center );
+        sphere.radius = box.min.distanceTo( box.max ) / 2;
+
+        geometry.boundingSphere = sphere;
+
+    }
+
+    /**
+     * @param {BufferGeometry} geometry
+     * @param {GLTF.Primitive} primitiveDef
+     * @param {GLTFParser} parser
+     * @return {Promise<BufferGeometry>}
+     */
+    function addPrimitiveAttributes( geometry, primitiveDef, parser ) {
+
+        const attributes = primitiveDef.attributes;
+
+        const pending = [];
+
+        function assignAttributeAccessor( accessorIndex, attributeName ) {
+
+            return parser.getDependency( 'accessor', accessorIndex )
+                .then( function ( accessor ) {
+
+                    geometry.setAttribute( attributeName, accessor );
+
+                } );
+
+        }
+
+        for ( const gltfAttributeName in attributes ) {
+
+            const threeAttributeName = ATTRIBUTES[ gltfAttributeName ] || gltfAttributeName.toLowerCase();
+
+            // Skip attributes already provided by e.g. Draco extension.
+            if ( threeAttributeName in geometry.attributes ) continue;
+
+            pending.push( assignAttributeAccessor( attributes[ gltfAttributeName ], threeAttributeName ) );
+
+        }
+
+        if ( primitiveDef.indices !== undefined && ! geometry.index ) {
+
+            const accessor = parser.getDependency( 'accessor', primitiveDef.indices ).then( function ( accessor ) {
+
+                geometry.setIndex( accessor );
+
+            } );
+
+            pending.push( accessor );
+
+        }
+
+        assignExtrasToUserData( geometry, primitiveDef );
+
+        computeBounds( geometry, primitiveDef, parser );
+
+        return Promise.all( pending ).then( function () {
+
+            return primitiveDef.targets !== undefined
+                ? addMorphTargets( geometry, primitiveDef.targets, parser )
+                : geometry;
+
+        } );
+
+    }
+
+    /**
+     * @param {BufferGeometry} geometry
+     * @param {Number} drawMode
+     * @return {BufferGeometry}
+     */
+    function toTrianglesDrawMode( geometry, drawMode ) {
+
+        let index = geometry.getIndex();
+
+        // generate index if not present
+
+        if ( index === null ) {
+
+            const indices = [];
+
+            const position = geometry.getAttribute( 'position' );
+
+            if ( position !== undefined ) {
+
+                for ( let i = 0; i < position.count; i ++ ) {
+
+                    indices.push( i );
+
+                }
+
+                geometry.setIndex( indices );
+                index = geometry.getIndex();
+
+            } else {
+
+                console.error( 'THREE.GLTFLoader.toTrianglesDrawMode(): Undefined position attribute. Processing not possible.' );
+                return geometry;
+
+            }
+
+        }
+
+        //
+
+        const numberOfTriangles = index.count - 2;
+        const newIndices = [];
+
+        if ( drawMode === TriangleFanDrawMode ) {
+
+            // gl.TRIANGLE_FAN
+
+            for ( let i = 1; i <= numberOfTriangles; i ++ ) {
+
+                newIndices.push( index.getX( 0 ) );
+                newIndices.push( index.getX( i ) );
+                newIndices.push( index.getX( i + 1 ) );
+
+            }
+
+        } else {
+
+            // gl.TRIANGLE_STRIP
+
+            for ( let i = 0; i < numberOfTriangles; i ++ ) {
+
+                if ( i % 2 === 0 ) {
+
+                    newIndices.push( index.getX( i ) );
+                    newIndices.push( index.getX( i + 1 ) );
+                    newIndices.push( index.getX( i + 2 ) );
+
+
+                } else {
+
+                    newIndices.push( index.getX( i + 2 ) );
+                    newIndices.push( index.getX( i + 1 ) );
+                    newIndices.push( index.getX( i ) );
+
+                }
+
+            }
+
+        }
+
+        if ( ( newIndices.length / 3 ) !== numberOfTriangles ) {
+
+            console.error( 'THREE.GLTFLoader.toTrianglesDrawMode(): Unable to generate correct amount of triangles.' );
+
+        }
+
+        // build final geometry
+
+        const newGeometry = geometry.clone();
+        newGeometry.setIndex( newIndices );
+
+        return newGeometry;
+
+    }
+
+    /**
+     * @webxr-input-profiles/motion-controllers 1.0.0 https://github.com/immersive-web/webxr-input-profiles
+     */
+
+    const Constants = {
+      Handedness: Object.freeze({
+        NONE: 'none',
+        LEFT: 'left',
+        RIGHT: 'right'
+      }),
+
+      ComponentState: Object.freeze({
+        DEFAULT: 'default',
+        TOUCHED: 'touched',
+        PRESSED: 'pressed'
+      }),
+
+      ComponentProperty: Object.freeze({
+        BUTTON: 'button',
+        X_AXIS: 'xAxis',
+        Y_AXIS: 'yAxis',
+        STATE: 'state'
+      }),
+
+      ComponentType: Object.freeze({
+        TRIGGER: 'trigger',
+        SQUEEZE: 'squeeze',
+        TOUCHPAD: 'touchpad',
+        THUMBSTICK: 'thumbstick',
+        BUTTON: 'button'
+      }),
+
+      ButtonTouchThreshold: 0.05,
+
+      AxisTouchThreshold: 0.1,
+
+      VisualResponseProperty: Object.freeze({
+        TRANSFORM: 'transform',
+        VISIBILITY: 'visibility'
+      })
+    };
+
+    /**
+     * @description Static helper function to fetch a JSON file and turn it into a JS object
+     * @param {string} path - Path to JSON file to be fetched
+     */
+    async function fetchJsonFile(path) {
+      const response = await fetch(path);
+      if (!response.ok) {
+        throw new Error(response.statusText);
+      } else {
+        return response.json();
+      }
+    }
+
+    async function fetchProfilesList(basePath) {
+      if (!basePath) {
+        throw new Error('No basePath supplied');
+      }
+
+      const profileListFileName = 'profilesList.json';
+      const profilesList = await fetchJsonFile(`${basePath}/${profileListFileName}`);
+      return profilesList;
+    }
+
+    async function fetchProfile(xrInputSource, basePath, defaultProfile = null, getAssetPath = true) {
+      if (!xrInputSource) {
+        throw new Error('No xrInputSource supplied');
+      }
+
+      if (!basePath) {
+        throw new Error('No basePath supplied');
+      }
+
+      // Get the list of profiles
+      const supportedProfilesList = await fetchProfilesList(basePath);
+
+      // Find the relative path to the first requested profile that is recognized
+      let match;
+      xrInputSource.profiles.some((profileId) => {
+        const supportedProfile = supportedProfilesList[profileId];
+        if (supportedProfile) {
+          match = {
+            profileId,
+            profilePath: `${basePath}/${supportedProfile.path}`,
+            deprecated: !!supportedProfile.deprecated
+          };
+        }
+        return !!match;
+      });
+
+      if (!match) {
+        if (!defaultProfile) {
+          throw new Error('No matching profile name found');
+        }
+
+        const supportedProfile = supportedProfilesList[defaultProfile];
+        if (!supportedProfile) {
+          throw new Error(`No matching profile name found and default profile "${defaultProfile}" missing.`);
+        }
+
+        match = {
+          profileId: defaultProfile,
+          profilePath: `${basePath}/${supportedProfile.path}`,
+          deprecated: !!supportedProfile.deprecated
+        };
+      }
+
+      const profile = await fetchJsonFile(match.profilePath);
+
+      let assetPath;
+      if (getAssetPath) {
+        let layout;
+        if (xrInputSource.handedness === 'any') {
+          layout = profile.layouts[Object.keys(profile.layouts)[0]];
+        } else {
+          layout = profile.layouts[xrInputSource.handedness];
+        }
+        if (!layout) {
+          throw new Error(
+            `No matching handedness, ${xrInputSource.handedness}, in profile ${match.profileId}`
+          );
+        }
+
+        if (layout.assetPath) {
+          assetPath = match.profilePath.replace('profile.json', layout.assetPath);
+        }
+      }
+
+      return { profile, assetPath };
+    }
+
+    /** @constant {Object} */
+    const defaultComponentValues = {
+      xAxis: 0,
+      yAxis: 0,
+      button: 0,
+      state: Constants.ComponentState.DEFAULT
+    };
+
+    /**
+     * @description Converts an X, Y coordinate from the range -1 to 1 (as reported by the Gamepad
+     * API) to the range 0 to 1 (for interpolation). Also caps the X, Y values to be bounded within
+     * a circle. This ensures that thumbsticks are not animated outside the bounds of their physical
+     * range of motion and touchpads do not report touch locations off their physical bounds.
+     * @param {number} x The original x coordinate in the range -1 to 1
+     * @param {number} y The original y coordinate in the range -1 to 1
+     */
+    function normalizeAxes(x = 0, y = 0) {
+      let xAxis = x;
+      let yAxis = y;
+
+      // Determine if the point is outside the bounds of the circle
+      // and, if so, place it on the edge of the circle
+      const hypotenuse = Math.sqrt((x * x) + (y * y));
+      if (hypotenuse > 1) {
+        const theta = Math.atan2(y, x);
+        xAxis = Math.cos(theta);
+        yAxis = Math.sin(theta);
+      }
+
+      // Scale and move the circle so values are in the interpolation range.  The circle's origin moves
+      // from (0, 0) to (0.5, 0.5). The circle's radius scales from 1 to be 0.5.
+      const result = {
+        normalizedXAxis: (xAxis * 0.5) + 0.5,
+        normalizedYAxis: (yAxis * 0.5) + 0.5
+      };
+      return result;
+    }
+
+    /**
+     * Contains the description of how the 3D model should visually respond to a specific user input.
+     * This is accomplished by initializing the object with the name of a node in the 3D model and
+     * property that need to be modified in response to user input, the name of the nodes representing
+     * the allowable range of motion, and the name of the input which triggers the change. In response
+     * to the named input changing, this object computes the appropriate weighting to use for
+     * interpolating between the range of motion nodes.
+     */
+    class VisualResponse {
+      constructor(visualResponseDescription) {
+        this.componentProperty = visualResponseDescription.componentProperty;
+        this.states = visualResponseDescription.states;
+        this.valueNodeName = visualResponseDescription.valueNodeName;
+        this.valueNodeProperty = visualResponseDescription.valueNodeProperty;
+
+        if (this.valueNodeProperty === Constants.VisualResponseProperty.TRANSFORM) {
+          this.minNodeName = visualResponseDescription.minNodeName;
+          this.maxNodeName = visualResponseDescription.maxNodeName;
+        }
+
+        // Initializes the response's current value based on default data
+        this.value = 0;
+        this.updateFromComponent(defaultComponentValues);
+      }
+
+      /**
+       * Computes the visual response's interpolation weight based on component state
+       * @param {Object} componentValues - The component from which to update
+       * @param {number} xAxis - The reported X axis value of the component
+       * @param {number} yAxis - The reported Y axis value of the component
+       * @param {number} button - The reported value of the component's button
+       * @param {string} state - The component's active state
+       */
+      updateFromComponent({
+        xAxis, yAxis, button, state
+      }) {
+        const { normalizedXAxis, normalizedYAxis } = normalizeAxes(xAxis, yAxis);
+        switch (this.componentProperty) {
+          case Constants.ComponentProperty.X_AXIS:
+            this.value = (this.states.includes(state)) ? normalizedXAxis : 0.5;
+            break;
+          case Constants.ComponentProperty.Y_AXIS:
+            this.value = (this.states.includes(state)) ? normalizedYAxis : 0.5;
+            break;
+          case Constants.ComponentProperty.BUTTON:
+            this.value = (this.states.includes(state)) ? button : 0;
+            break;
+          case Constants.ComponentProperty.STATE:
+            if (this.valueNodeProperty === Constants.VisualResponseProperty.VISIBILITY) {
+              this.value = (this.states.includes(state));
+            } else {
+              this.value = this.states.includes(state) ? 1.0 : 0.0;
+            }
+            break;
+          default:
+            throw new Error(`Unexpected visualResponse componentProperty ${this.componentProperty}`);
+        }
+      }
+    }
+
+    class Component {
+      /**
+       * @param {Object} componentId - Id of the component
+       * @param {Object} componentDescription - Description of the component to be created
+       */
+      constructor(componentId, componentDescription) {
+        if (!componentId
+         || !componentDescription
+         || !componentDescription.visualResponses
+         || !componentDescription.gamepadIndices
+         || Object.keys(componentDescription.gamepadIndices).length === 0) {
+          throw new Error('Invalid arguments supplied');
+        }
+
+        this.id = componentId;
+        this.type = componentDescription.type;
+        this.rootNodeName = componentDescription.rootNodeName;
+        this.touchPointNodeName = componentDescription.touchPointNodeName;
+
+        // Build all the visual responses for this component
+        this.visualResponses = {};
+        Object.keys(componentDescription.visualResponses).forEach((responseName) => {
+          const visualResponse = new VisualResponse(componentDescription.visualResponses[responseName]);
+          this.visualResponses[responseName] = visualResponse;
+        });
+
+        // Set default values
+        this.gamepadIndices = Object.assign({}, componentDescription.gamepadIndices);
+
+        this.values = {
+          state: Constants.ComponentState.DEFAULT,
+          button: (this.gamepadIndices.button !== undefined) ? 0 : undefined,
+          xAxis: (this.gamepadIndices.xAxis !== undefined) ? 0 : undefined,
+          yAxis: (this.gamepadIndices.yAxis !== undefined) ? 0 : undefined
+        };
+      }
+
+      get data() {
+        const data = { id: this.id, ...this.values };
+        return data;
+      }
+
+      /**
+       * @description Poll for updated data based on current gamepad state
+       * @param {Object} gamepad - The gamepad object from which the component data should be polled
+       */
+      updateFromGamepad(gamepad) {
+        // Set the state to default before processing other data sources
+        this.values.state = Constants.ComponentState.DEFAULT;
+
+        // Get and normalize button
+        if (this.gamepadIndices.button !== undefined
+            && gamepad.buttons.length > this.gamepadIndices.button) {
+          const gamepadButton = gamepad.buttons[this.gamepadIndices.button];
+          this.values.button = gamepadButton.value;
+          this.values.button = (this.values.button < 0) ? 0 : this.values.button;
+          this.values.button = (this.values.button > 1) ? 1 : this.values.button;
+
+          // Set the state based on the button
+          if (gamepadButton.pressed || this.values.button === 1) {
+            this.values.state = Constants.ComponentState.PRESSED;
+          } else if (gamepadButton.touched || this.values.button > Constants.ButtonTouchThreshold) {
+            this.values.state = Constants.ComponentState.TOUCHED;
+          }
+        }
+
+        // Get and normalize x axis value
+        if (this.gamepadIndices.xAxis !== undefined
+            && gamepad.axes.length > this.gamepadIndices.xAxis) {
+          this.values.xAxis = gamepad.axes[this.gamepadIndices.xAxis];
+          this.values.xAxis = (this.values.xAxis < -1) ? -1 : this.values.xAxis;
+          this.values.xAxis = (this.values.xAxis > 1) ? 1 : this.values.xAxis;
+
+          // If the state is still default, check if the xAxis makes it touched
+          if (this.values.state === Constants.ComponentState.DEFAULT
+            && Math.abs(this.values.xAxis) > Constants.AxisTouchThreshold) {
+            this.values.state = Constants.ComponentState.TOUCHED;
+          }
+        }
+
+        // Get and normalize Y axis value
+        if (this.gamepadIndices.yAxis !== undefined
+            && gamepad.axes.length > this.gamepadIndices.yAxis) {
+          this.values.yAxis = gamepad.axes[this.gamepadIndices.yAxis];
+          this.values.yAxis = (this.values.yAxis < -1) ? -1 : this.values.yAxis;
+          this.values.yAxis = (this.values.yAxis > 1) ? 1 : this.values.yAxis;
+
+          // If the state is still default, check if the yAxis makes it touched
+          if (this.values.state === Constants.ComponentState.DEFAULT
+            && Math.abs(this.values.yAxis) > Constants.AxisTouchThreshold) {
+            this.values.state = Constants.ComponentState.TOUCHED;
+          }
+        }
+
+        // Update the visual response weights based on the current component data
+        Object.values(this.visualResponses).forEach((visualResponse) => {
+          visualResponse.updateFromComponent(this.values);
+        });
+      }
+    }
+
+    /**
+      * @description Builds a motion controller with components and visual responses based on the
+      * supplied profile description. Data is polled from the xrInputSource's gamepad.
+      * @author Nell Waliczek / https://github.com/NellWaliczek
+    */
+    class MotionController {
+      /**
+       * @param {Object} xrInputSource - The XRInputSource to build the MotionController around
+       * @param {Object} profile - The best matched profile description for the supplied xrInputSource
+       * @param {Object} assetUrl
+       */
+      constructor(xrInputSource, profile, assetUrl) {
+        if (!xrInputSource) {
+          throw new Error('No xrInputSource supplied');
+        }
+
+        if (!profile) {
+          throw new Error('No profile supplied');
+        }
+
+        this.xrInputSource = xrInputSource;
+        this.assetUrl = assetUrl;
+        this.id = profile.profileId;
+
+        // Build child components as described in the profile description
+        this.layoutDescription = profile.layouts[xrInputSource.handedness];
+        this.components = {};
+        Object.keys(this.layoutDescription.components).forEach((componentId) => {
+          const componentDescription = this.layoutDescription.components[componentId];
+          this.components[componentId] = new Component(componentId, componentDescription);
+        });
+
+        // Initialize components based on current gamepad state
+        this.updateFromGamepad();
+      }
+
+      get gripSpace() {
+        return this.xrInputSource.gripSpace;
+      }
+
+      get targetRaySpace() {
+        return this.xrInputSource.targetRaySpace;
+      }
+
+      /**
+       * @description Returns a subset of component data for simplified debugging
+       */
+      get data() {
+        const data = [];
+        Object.values(this.components).forEach((component) => {
+          data.push(component.data);
+        });
+        return data;
+      }
+
+      /**
+       * @description Poll for updated data based on current gamepad state
+       */
+      updateFromGamepad() {
+        Object.values(this.components).forEach((component) => {
+          component.updateFromGamepad(this.xrInputSource.gamepad);
+        });
+      }
+    }
+
+    /*
+    import {
+        Mesh,
+        MeshBasicMaterial,
+        Object3D,
+        SphereGeometry,
+    } from 'three';
+    */
+
+    const DEFAULT_PROFILES_PATH = 'https://cdn.jsdelivr.net/npm/@webxr-input-profiles/assets@1.0/dist/profiles';
+    const DEFAULT_PROFILE = 'generic-trigger';
+
+    class XRControllerModel extends THREE.Object3D {
+
+        constructor() {
+
+            super();
+
+            this.motionController = null;
+            this.envMap = null;
+
+        }
+
+        setEnvironmentMap( envMap ) {
+
+            if ( this.envMap == envMap ) {
+
+                return this;
+
+            }
+
+            this.envMap = envMap;
+            this.traverse( ( child ) => {
+
+                if ( child.isMesh ) {
+
+                    child.material.envMap = this.envMap;
+                    child.material.needsUpdate = true;
+
+                }
+
+            } );
+
+            return this;
+
+        }
+
+        /**
+         * Polls data from the XRInputSource and updates the model's components to match
+         * the real world data
+         */
+        updateMatrixWorld( force ) {
+
+            super.updateMatrixWorld( force );
+
+            if ( ! this.motionController ) return;
+
+            // Cause the MotionController to poll the Gamepad for data
+            this.motionController.updateFromGamepad();
+
+            // Update the 3D model to reflect the button, thumbstick, and touchpad state
+            Object.values( this.motionController.components ).forEach( ( component ) => {
+
+                // Update node data based on the visual responses' current states
+                Object.values( component.visualResponses ).forEach( ( visualResponse ) => {
+
+                    const { valueNode, minNode, maxNode, value, valueNodeProperty } = visualResponse;
+
+                    // Skip if the visual response node is not found. No error is needed,
+                    // because it will have been reported at load time.
+                    if ( ! valueNode ) return;
+
+                    // Calculate the new properties based on the weight supplied
+                    if ( valueNodeProperty === Constants.VisualResponseProperty.VISIBILITY ) {
+
+                        valueNode.visible = value;
+
+                    } else if ( valueNodeProperty === Constants.VisualResponseProperty.TRANSFORM ) {
+
+                        valueNode.quaternion.slerpQuaternions(
+                            minNode.quaternion,
+                            maxNode.quaternion,
+                            value
+                        );
+
+                        valueNode.position.lerpVectors(
+                            minNode.position,
+                            maxNode.position,
+                            value
+                        );
+
+                    }
+
+                } );
+
+            } );
+
+        }
+
+    }
+
+    /**
+     * Walks the model's tree to find the nodes needed to animate the components and
+     * saves them to the motionContoller components for use in the frame loop. When
+     * touchpads are found, attaches a touch dot to them.
+     */
+    function findNodes( motionController, scene ) {
+
+        // Loop through the components and find the nodes needed for each components' visual responses
+        Object.values( motionController.components ).forEach( ( component ) => {
+
+            const { type, touchPointNodeName, visualResponses } = component;
+
+            if ( type === Constants.ComponentType.TOUCHPAD ) {
+
+                component.touchPointNode = scene.getObjectByName( touchPointNodeName );
+                if ( component.touchPointNode ) {
+
+                    // Attach a touch dot to the touchpad.
+                    const sphereGeometry = new SphereGeometry( 0.001 );
+                    const material = new MeshBasicMaterial( { color: 0x0000FF } );
+                    const sphere = new Mesh( sphereGeometry, material );
+                    component.touchPointNode.add( sphere );
+
+                } else {
+
+                    console.warn( `Could not find touch dot, ${component.touchPointNodeName}, in touchpad component ${component.id}` );
+
+                }
+
+            }
+
+            // Loop through all the visual responses to be applied to this component
+            Object.values( visualResponses ).forEach( ( visualResponse ) => {
+
+                const { valueNodeName, minNodeName, maxNodeName, valueNodeProperty } = visualResponse;
+
+                // If animating a transform, find the two nodes to be interpolated between.
+                if ( valueNodeProperty === Constants.VisualResponseProperty.TRANSFORM ) {
+
+                    visualResponse.minNode = scene.getObjectByName( minNodeName );
+                    visualResponse.maxNode = scene.getObjectByName( maxNodeName );
+
+                    // If the extents cannot be found, skip this animation
+                    if ( ! visualResponse.minNode ) {
+
+                        console.warn( `Could not find ${minNodeName} in the model` );
+                        return;
+
+                    }
+
+                    if ( ! visualResponse.maxNode ) {
+
+                        console.warn( `Could not find ${maxNodeName} in the model` );
+                        return;
+
+                    }
+
+                }
+
+                // If the target node cannot be found, skip this animation
+                visualResponse.valueNode = scene.getObjectByName( valueNodeName );
+                if ( ! visualResponse.valueNode ) {
+
+                    console.warn( `Could not find ${valueNodeName} in the model` );
+
+                }
+
+            } );
+
+        } );
+
+    }
+
+    function addAssetSceneToControllerModel( controllerModel, scene ) {
+
+        // Find the nodes needed for animation and cache them on the motionController.
+        findNodes( controllerModel.motionController, scene );
+
+        // Apply any environment map that the mesh already has set.
+        if ( controllerModel.envMap ) {
+
+            scene.traverse( ( child ) => {
+
+                if ( child.isMesh ) {
+
+                    child.material.envMap = controllerModel.envMap;
+                    child.material.needsUpdate = true;
+
+                }
+
+            } );
+
+        }
+
+        // Add the glTF scene to the controllerModel.
+        controllerModel.add( scene );
+
+    }
+
+    class XRControllerModelFactory {
+
+        constructor( gltfLoader = null ) {
+
+            this.gltfLoader = gltfLoader;
+            this.path = DEFAULT_PROFILES_PATH;
+            this._assetCache = {};
+
+            // If a GLTFLoader wasn't supplied to the constructor create a new one.
+            if ( ! this.gltfLoader ) {
+
+                this.gltfLoader = new GLTFLoader();
+
+            }
+
+        }
+
+        createControllerModel( controller ) {
+
+            const controllerModel = new XRControllerModel();
+            let scene = null;
+
+            controller.addEventListener( 'connected', ( event ) => {
+
+                const xrInputSource = event.data;
+
+                if ( xrInputSource.targetRayMode !== 'tracked-pointer' || ! xrInputSource.gamepad ) return;
+
+                fetchProfile( xrInputSource, this.path, DEFAULT_PROFILE ).then( ( { profile, assetPath } ) => {
+
+                    controllerModel.motionController = new MotionController(
+                        xrInputSource,
+                        profile,
+                        assetPath
+                    );
+
+                    const cachedAsset = this._assetCache[ controllerModel.motionController.assetUrl ];
+                    if ( cachedAsset ) {
+
+                        scene = cachedAsset.scene.clone();
+
+                        addAssetSceneToControllerModel( controllerModel, scene );
+
+                    } else {
+
+                        if ( ! this.gltfLoader ) {
+
+                            throw new Error( 'GLTFLoader not set.' );
+
+                        }
+
+                        this.gltfLoader.setPath( '' );
+                        this.gltfLoader.load( controllerModel.motionController.assetUrl, ( asset ) => {
+
+                            this._assetCache[ controllerModel.motionController.assetUrl ] = asset;
+
+                            scene = asset.scene.clone();
+
+                            addAssetSceneToControllerModel( controllerModel, scene );
+
+                        },
+                        null,
+                        () => {
+
+                            throw new Error( `Asset ${controllerModel.motionController.assetUrl} missing or malformed.` );
+
+                        } );
+
+                    }
+
+                } ).catch( ( err ) => {
+
+                    console.warn( err );
+
+                } );
+
+            } );
+
+            controller.addEventListener( 'disconnected', () => {
+
+                controllerModel.motionController = null;
+                controllerModel.remove( scene );
+                scene = null;
+
+            } );
+
+            return controllerModel;
+
+        }
+
+    }
+
+    exports.Constants = Constants;
+    exports.GLTFLoader = GLTFLoader;
+    exports.MotionController = MotionController;
+    exports.XRControllerModelFactory = XRControllerModelFactory;
+    exports.fetchProfile = fetchProfile;
+    exports.fetchProfilesList = fetchProfilesList;
+
+    Object.defineProperty(exports, '__esModule', { value: true });
+
+    return exports;
+
+})({});
+
 var $NGL_shaderTextHash = {};
 
 $NGL_shaderTextHash['SphereImpostor.frag'] = ["#define STANDARD",
@@ -220,7 +5323,7 @@ $NGL_shaderTextHash['SphereImpostor.vert'] = ["uniform mat4 projectionMatrixInve
 "    0.0, 0.0, 0.0, -1.0",
 ");",
 "",
-"mat4 transpose( in mat4 inMatrix ) {",
+"mat4 transposeTmp( in mat4 inMatrix ) {",
 "    vec4 i0 = inMatrix[0];",
 "    vec4 i1 = inMatrix[1];",
 "    vec4 i2 = inMatrix[2];",
@@ -285,7 +5388,7 @@ $NGL_shaderTextHash['SphereImpostor.vert'] = ["uniform mat4 projectionMatrixInve
 "        position.x, position.y, position.z, 1.0",
 "    );",
 "",
-"    mat4 R = transpose( projectionMatrix * modelViewMatrix * T );",
+"    mat4 R = transposeTmp( projectionMatrix * modelViewMatrix * T );",
 "    float A = dot( R[ 3 ], D * R[ 3 ] );",
 "    float B = -2.0 * dot( R[ 0 ], D * R[ 3 ] );",
 "    float C = dot( R[ 0 ], D * R[ 0 ] );",
@@ -818,7 +5921,7 @@ $NGL_shaderTextHash['SphereInstancing.vert'] = ["uniform mat4 projectionMatrixIn
 "    0.0, 0.0, 0.0, -1.0",
 ");",
 "",
-"mat4 transpose( in mat4 inMatrix ) {",
+"mat4 transposeTmp( in mat4 inMatrix ) {",
 "    vec4 i0 = inMatrix[0];",
 "    vec4 i1 = inMatrix[1];",
 "    vec4 i2 = inMatrix[2];",
@@ -883,7 +5986,7 @@ $NGL_shaderTextHash['SphereInstancing.vert'] = ["uniform mat4 projectionMatrixIn
 "        updatePosition.x, updatePosition.y, updatePosition.z, 1.0",
 "    );",
 "",
-"    mat4 R = transpose( projectionMatrix * modelViewMatrix * T );",
+"    mat4 R = transposeTmp( projectionMatrix * modelViewMatrix * T );",
 "    float A = dot( R[ 3 ], D * R[ 3 ] );",
 "    float B = -2.0 * dot( R[ 0 ], D * R[ 3 ] );",
 "    float C = dot( R[ 0 ], D * R[ 0 ] );",
@@ -4990,6 +10093,12 @@ var icn3d = (function (exports) {
                  coil: this.thr(0x6080FF) //this.thr(0xEEEEEE) //this.thr(0x6080FF)
             };
 
+            this.resn2restype = {
+                "ALA": 1, "ARG": 4, "ASN": 7, "ASP": 10, "CYS": 13, "GLN": 16, "GLU": 19, "GLY": 22, "HIS": 25, "ILE": 28, "LEU": 31, "LYS": 34, "MET": 37, "PHE": 40, "PRO": 43, "SER": 46, "THR": 49, "TRP": 52, "TYR": 55, "VAL": 58
+            };
+
+            this.nuclMainArray = ["C1'", "C1*", "C2'", "C2*", "C3'", "C3*", "C4'", "C4*", "C5'", "C5*", "O3'", "O3*", "O4'", "O4*", "O5'", "O5*", "P", "OP1", "O1P", "OP2", "O2P"];
+
             // https://www.ncbi.nlm.nih.gov/Class/FieldGuide/BLOSUM62.txt, range from -4 to 11
             this.b62ResArray = ['A', 'R', 'N', 'D', 'C', 'Q', 'E', 'G', 'H', 'I', 'L', 'K', 'M', 'F',
                 'P', 'S', 'T', 'W', 'Y', 'V', 'B', 'Z', 'X', '*']; // length: 24
@@ -5078,12 +10187,13 @@ var icn3d = (function (exports) {
         isCalphaPhosOnly(atomlist) { this.icn3dui;
               let bCalphaPhosOnly = false;
 
-              let index = 0, testLength = 50; //30
+              let index = 0, testLength = 100; //30
               //var bOtherAtoms = false;
               let nOtherAtoms = 0;
               for(let i in atomlist) {
                 if(index < testLength) {
-                  if(atomlist[i].name !== "CA" && atomlist[i].name !== "P" && atomlist[i].name !== "O3'" && atomlist[i].name !== "O3*") {
+                  let atomName = atomlist[i].name.trim();        
+                  if(atomName !== "CA" && atomName !== "P" && atomName !== "O3'" && atomName !== "O3*") {
                     //bOtherAtoms = true;
                     //break;
                     ++nOtherAtoms;
@@ -5508,13 +10618,21 @@ var icn3d = (function (exports) {
 
             // read in and reformat the coordinates
             // calculate the centroids
+            let finalCnt = n;
             for (i = 0; i < n; i++) {
+                if(co1[i] === undefined || co2[i] === undefined) {
+                    --finalCnt;
+                    continue;
+                }
                 ap.push(co1[i].clone());
                 bp.push(co2[i].clone());
 
                 cp.add(co1[i]);
                 cq.add(co2[i]);
             }
+
+            n = finalCnt;
+            if (n <= 1) return {'rot': undefined, 'trans1': undefined, 'trans2': undefined, 'rmsd': 999};
 
             cp.multiplyScalar(1.0 / n);
             cq.multiplyScalar(1.0 / n);
@@ -7789,7 +12907,7 @@ var icn3d = (function (exports) {
 
                                         pnts.push(nextAtom.coord);
                                         if(bCustom) {
-                                            radii.push(Tube.getCustomtubesize(nextoneResid));
+                                            radii.push(this.getCustomtubesize(nextoneResid));
                                         }
                                         else {
                                             radii.push(this.getRadius(radius, nextAtom));
@@ -7839,7 +12957,7 @@ var icn3d = (function (exports) {
                             if(prevAtom !== undefined && prevAtom.ssend) { // include the residue
                                 pnts.push(prevAtom.coord);
                                 if(bCustom) {
-                                    radii.push(Tube.getCustomtubesize(prevoneResid));
+                                    radii.push(this.getCustomtubesize(prevoneResid));
                                 }
                                 else {
                                     radii.push(this.getRadius(radius, prevAtom));
@@ -7853,7 +12971,7 @@ var icn3d = (function (exports) {
 
                     let radiusFinal;
                     if(bCustom) {
-                        radiusFinal = Tube.getCustomtubesize(atom.structure + '_' + atom.chain + '_' + atom.resi);
+                        radiusFinal = this.getCustomtubesize(atom.structure + '_' + atom.chain + '_' + atom.resi);
                     }
                     else {
                         radiusFinal = this.getRadius(radius, atom);
@@ -8363,7 +13481,15 @@ var icn3d = (function (exports) {
                     }
 
                     let maxDist = 6.0;
-                    let bBrokenSs = (prevCoorCA && Math.abs(currentCA.x - prevCoorCA.x) > maxDist) || (prevCoorCA && Math.abs(currentCA.y - prevCoorCA.y) > maxDist) || (prevCoorCA && Math.abs(currentCA.z - prevCoorCA.z) > maxDist);
+                    //let bBrokenSs = (prevCoorCA && Math.abs(currentCA.x - prevCoorCA.x) > maxDist) || (prevCoorCA && Math.abs(currentCA.y - prevCoorCA.y) > maxDist) || (prevCoorCA && Math.abs(currentCA.z - prevCoorCA.z) > maxDist);
+                    let bBrokenSs = !atoms.hasOwnProperty(atom.serial) || (prevCoorCA && Math.abs(currentCA.x - prevCoorCA.x) > maxDist) || (prevCoorCA && Math.abs(currentCA.y - prevCoorCA.y) > maxDist) || (prevCoorCA && Math.abs(currentCA.z - prevCoorCA.z) > maxDist);
+
+                    if(bBrokenSs && atom.ss === 'sheet') {
+                        bSheetSegment = true;
+                    }
+                    else if(bBrokenSs && atom.ss === 'helix') {
+                        bHelixSegment = true;
+                    }
 
                     if ((atom.ssbegin || atom.ssend || (drawnResidueCount === totalResidueCount - 1) || bBrokenSs) && pnts[0].length > 0 && bSameChain) {
                         let atomName = 'CA';
@@ -8728,7 +13854,7 @@ var icn3d = (function (exports) {
      * @author Jiyao Wang <wangjiy@ncbi.nlm.nih.gov> / https://github.com/ncbi/icn3d
      */
 
-    class Line {
+    class Line$1 {
         constructor(icn3d) {
             this.icn3d = icn3d;
         }
@@ -8837,8 +13963,10 @@ var icn3d = (function (exports) {
                     for(let i = 0, il = atom.bonds.length; i < il; ++i) {
                         let bondAtom = ic.atoms[atom.bonds[i]];
                         // hydrogen connected to Calpha: HA
-                        if(bondAtom.name === 'HA' || (bondAtom.name !== 'C' && bondAtom.name !== 'N'
-                          && bondAtom.elem !== 'H' && bondAtom.resi == atom.resi) ) {
+                        //if(bondAtom.name === 'HA' || (bondAtom.name !== 'C' && bondAtom.name !== 'N'
+                        //  && bondAtom.elem !== 'H' && bondAtom.resi == atom.resi) ) {
+                        if(bondAtom.name !== 'C' && bondAtom.name !== 'N'
+                            && bondAtom.elem !== 'H' && bondAtom.resi == atom.resi) {
                             coordArray.push(atom.coord);
                             coordArray.push(bondAtom.coord);
 
@@ -8847,14 +13975,14 @@ var icn3d = (function (exports) {
                         }
                     }
                 }
-
+    /*
                 // hydrogen connected to N: H
                 atom = ic.firstAtomObjCls.getFirstAtomObjByName(ic.residues[resid], 'N');
 
                 if(atom !== undefined) {
                     for(let i = 0, il = atom.bonds.length; i < il; ++i) {
                         let bondAtom = ic.atoms[atom.bonds[i]];
-                        // hydrogen connected to Calpha: HA
+                        // hydrogen connected to N: H
                         if(bondAtom.name === 'H') {
                             coordArray.push(atom.coord);
                             coordArray.push(bondAtom.coord);
@@ -8864,14 +13992,15 @@ var icn3d = (function (exports) {
                         }
                     }
                 }
+    */            
             }
 
             for(let i = 0, il = coordArray.length; i < il; i += 2) {
-                if(style === 'ball and stick' || style === 'stick') {
-                    let radius = (style === 'stick') ? ic.cylinderRadius : ic.cylinderRadius * 0.5;
+                if(style === 'ball and stick' || style === 'stick' || style === 'ball and stick2' || style === 'stick2') {
+                    let radius = (style === 'stick' || style === 'stick2') ? ic.cylinderRadius : ic.cylinderRadius * 0.5;
                     ic.cylinderCls.createCylinder(coordArray[i], coordArray[i+1], radius, colorArray[i+1]);
                 }
-                else if(style === 'lines') {
+                else if(style === 'lines' || style === 'lines2') {
                     let line = this.createSingleLine(coordArray[i], coordArray[i+1], colorArray[i+1], false, 0.5);
                     ic.mdl.add(line);
                 }
@@ -8979,7 +14108,7 @@ var icn3d = (function (exports) {
      * @author Jiyao Wang <wangjiy@ncbi.nlm.nih.gov> / https://github.com/ncbi/icn3d
      */
 
-    class Sphere {
+    class Sphere$1 {
         constructor(icn3d) {
             this.icn3d = icn3d;
         }
@@ -12008,7 +17137,7 @@ var icn3d = (function (exports) {
             //var sigmafofc = 3.0;
             let  maxdist = 1; // maximum distance to show electron density map, set it between 1 AND 2
 
-            let  bTransparent = (parseInt(10*opacity) != 10 && !wireframe && !(ic.bInstanced && Object.keys(ic.atoms).length * ic.biomtMatrices.length > ic.maxatomcnt) ) ? true : false;
+            (parseInt(10*opacity) != 10 && !wireframe && !(ic.bInstanced && Object.keys(ic.atoms).length * ic.biomtMatrices.length > ic.maxatomcnt) ) ? true : false;
 
             let  ps;
 
@@ -12103,7 +17232,7 @@ var icn3d = (function (exports) {
                     atomsToShow: Object.keys(atomsToShow),
                     extendedAtoms: extendedAtoms,
                     type: realType,
-                    threshbox: (bTransparent) ? 60 : ic.threshbox,
+                    threshbox: (ic.transparentRenderOrder) ? 60 : ic.threshbox,
                     bCalcArea: ic.bCalcArea
                 };
 
@@ -12306,8 +17435,8 @@ var icn3d = (function (exports) {
             geo.type = 'Surface'; // to be recognized in vrml.js for 3D printing
 
             // use the regular way to show transparency for type == 15 (surface with potential)
-        //    if(bTransparent && (type == 1 || type == 2 || type == 3)) { // WebGL has some ordering problem when dealing with transparency
-            if(bTransparent) { // WebGL has some ordering problem when dealing with transparency
+        //    if(ic.transparentRenderOrder && (type == 1 || type == 2 || type == 3)) { // WebGL has some ordering problem when dealing with transparency
+            if(ic.transparentRenderOrder) { // WebGL has some ordering problem when dealing with transparency
               //var normalArrayIn = JSON.parse(JSON.stringify(geo)).data.normals;
               //var normalArrayIn = geo.getAttribute('normal').array;
 
@@ -12364,17 +17493,32 @@ var icn3d = (function (exports) {
                     //vertexColors.push(ic.atoms[verts[vb].atomid].color);
                     //vertexColors.push(ic.atoms[verts[vc].atomid].color);
 
-                    colorArray[offset2++] = ic.atoms[verts[va].atomid].color.r;
-                    colorArray[offset2++] = ic.atoms[verts[va].atomid].color.g;
-                    colorArray[offset2++] = ic.atoms[verts[va].atomid].color.b;
+                    if(type == 21 || type == 22 || type == 23) { // potential on surface
+                        colorArray[offset2++] = verts[va].color.r;
+                        colorArray[offset2++] = verts[va].color.g;
+                        colorArray[offset2++] = verts[va].color.b;
 
-                    colorArray[offset2++] = ic.atoms[verts[vb].atomid].color.r;
-                    colorArray[offset2++] = ic.atoms[verts[vb].atomid].color.g;
-                    colorArray[offset2++] = ic.atoms[verts[vb].atomid].color.b;
+                        colorArray[offset2++] = verts[vb].color.r;
+                        colorArray[offset2++] = verts[vb].color.g;
+                        colorArray[offset2++] = verts[vb].color.b;
 
-                    colorArray[offset2++] = ic.atoms[verts[vc].atomid].color.r;
-                    colorArray[offset2++] = ic.atoms[verts[vc].atomid].color.g;
-                    colorArray[offset2++] = ic.atoms[verts[vc].atomid].color.b;
+                        colorArray[offset2++] = verts[vc].color.r;
+                        colorArray[offset2++] = verts[vc].color.g;
+                        colorArray[offset2++] = verts[vc].color.b;
+                    }
+                    else {
+                        colorArray[offset2++] = ic.atoms[verts[va].atomid].color.r;
+                        colorArray[offset2++] = ic.atoms[verts[va].atomid].color.g;
+                        colorArray[offset2++] = ic.atoms[verts[va].atomid].color.b;
+        
+                        colorArray[offset2++] = ic.atoms[verts[vb].atomid].color.r;
+                        colorArray[offset2++] = ic.atoms[verts[vb].atomid].color.g;
+                        colorArray[offset2++] = ic.atoms[verts[vb].atomid].color.b;
+        
+                        colorArray[offset2++] = ic.atoms[verts[vc].atomid].color.r;
+                        colorArray[offset2++] = ic.atoms[verts[vc].atomid].color.g;
+                        colorArray[offset2++] = ic.atoms[verts[vc].atomid].color.b;
+                    }
 
                     //var normals = [];
                     //normals.push(normalArrayIn[va]);
@@ -12473,7 +17617,7 @@ var icn3d = (function (exports) {
                 }
               } // for(let va
             }
-            else {
+            else {         
                 let  mesh = new THREE.Mesh(geo, new THREE.MeshPhongMaterial({
                     specular: ic.frac,
                     shininess: 20, //10, //30,
@@ -12482,8 +17626,9 @@ var icn3d = (function (exports) {
                     wireframe: wireframe,
                     opacity: opacity,
                     transparent: true,
+                    depthWrite: (parseInt(10*opacity) != 10) ? false : true, // important to make the transparency work
                     side: THREE.DoubleSide
-                    //depthTest: (ic.bTransparent) ? false : true
+                    //depthTest: (ic.ic.transparentRenderOrder) ? false : true
                 }));
 
                 //http://www.html5gamedevs.com/topic/7288-threejs-transparency-bug-or-limitation-or-what/
@@ -12504,7 +17649,7 @@ var icn3d = (function (exports) {
                     ic.prevSurfaces.push(mesh);
                 }
             }
-
+            
             // remove the reference
             ps = null;
             verts = null;
@@ -12615,7 +17760,7 @@ var icn3d = (function (exports) {
                if(bPngHtml) url += "&random=" + parseInt(Math.random() * 1000); // generate a new shorten URL and thus image name everytime
                //var inputid =(ic.inputid) ? ic.inputid : "custom";
                let inputid = Object.keys(ic.structures).join('_');
-               if(inputid == 'stru') {
+               if(inputid == 'STRU') {
                    if(ic.filename) {
                        inputid = ic.filename;
                    }
@@ -12626,7 +17771,7 @@ var icn3d = (function (exports) {
 
                if(!bPngHtml) {
                    if(ic.bInputfile && !ic.bInputUrlfile) {
-                       alert("Share Link does NOT work when the data is from custom files. Please save 'iCn3D PNG Image' in the File menu and open it in iCn3D.");
+                       alert("Share Link does NOT work when the data are from custom files. Please save 'iCn3D PNG Image' in the File menu and open it in iCn3D.");
                        return;
                    }
                    if(bTooLong) {
@@ -12724,7 +17869,7 @@ var icn3d = (function (exports) {
 
                     if(key === 'simplemenu' && value === false) continue;
                     if(key === 'mobilemenu' && value === false) continue;
-                    if(key === 'closepopup' && value === false) continue;
+                    //if(key === 'closepopup' && value === false) continue;
                     if(key === 'showanno' && value === false) continue;
                     if(key === 'showseq' && value === false) continue;
                     if(key === 'showalignseq' && value === false) continue;
@@ -12823,6 +17968,11 @@ var icn3d = (function (exports) {
                    let command_tf = ic.commands[i].split('|||');
                    let command_tf2 = command_tf[0].split('&command=');
                    let commandStr = command_tf2[0].trim();
+
+                   // only one load command
+                   //if(prevCommandStr.substr(0, 5) == 'load ' && commandStr.substr(0, 5) == 'load ') {
+                   //    continue;
+                   //}
 
                    //statefile += ic.commands[i] + "\n";
 
@@ -14234,7 +19384,7 @@ var icn3d = (function (exports) {
               this.setProtNuclLigInMenu();
 
               // show 3d domains for mmdbid
-              if(me.cfg.mmdbid !== undefined || me.cfg.gi !== undefined || me.cfg.chainalign !== undefined) {
+              if(me.cfg.mmdbid !== undefined || me.cfg.gi !== undefined  || me.cfg.chainalign !== undefined || me.cfg.mmdbafid !== undefined) {
                   for(let tddomainName in ic.tddomains) {
                       ic.selectionCls.selectResidueList(ic.tddomains[tddomainName], tddomainName, tddomainName, false, false);
                   }
@@ -15980,7 +21130,7 @@ var icn3d = (function (exports) {
                 }
 
                 //if(cnt == 5 || cnt == 6) {
-                if(cnt >= 3 && cnt <= 6) { // two neighboring cycles 5 and 6 in caffeine (CID 2519) will get reported as 5 and 4 atoms. The shared two atoms are reported only once.
+                if(cnt >= 3 && cnt <= 6 && coordArray[0] && coordArray[1] && coordArray[2] && coordArray[3]) { // two neighboring cycles 5 and 6 in caffeine (CID 2519) will get reported as 5 and 4 atoms. The shared two atoms are reported only once.
                     let v1 = coordArray[0].clone().sub(coordArray[1]).normalize();
                     let v2 = coordArray[1].clone().sub(coordArray[2]).normalize();
                     let v3 = coordArray[2].clone().sub(coordArray[3]).normalize();
@@ -16492,6 +21642,7 @@ var icn3d = (function (exports) {
                   let  atom = ic.firstAtomObjCls.getFirstAtomObj(ic.residues[resid]);
                   resid2color[resid] = atom.color.getHexString().toUpperCase();
               }
+
               let  target2resid = {};
               for(let i = 0, il = graphJson.nodes.length; i < il; ++i) {
                   let  node = graphJson.nodes[i];
@@ -16518,11 +21669,9 @@ var icn3d = (function (exports) {
               ic.graphStr = JSON.stringify(graphJson);
           }
 
-          /*
           if(ic.bGraph) ic.drawGraphCls.drawGraph(ic.graphStr, ic.pre + 'dl_graph');
           if(ic.bLinegraph) ic.lineGraphCls.drawLineGraph(ic.graphStr);
           if(ic.bScatterplot) ic.lineGraphCls.drawLineGraph(ic.graphStr, true);
-          */
         }
 
         handleForce() { let  ic = this.icn3d, me = ic.icn3dui;
@@ -16933,19 +22082,21 @@ var icn3d = (function (exports) {
                     nodeArray1Split[i] = nodeArraysTmp.nodeArray1;
                     nodeArray2Split[i] = nodeArraysTmp.nodeArray2;
 
-                    // common interactions
-                    bCommonDiff = 1;
-                    nodeArraysTmp = ic.getGraphCls.getNodeTopBottom(nameHashSplit[i], name2node, undefined, bCommonDiff, nameHashSplitCommon[i]);
-                    nodeArray1SplitCommon[i] = nodeArraysTmp.nodeArray1;
-                    nodeArray2SplitCommon[i] = nodeArraysTmp.nodeArray2;
-                    name2node = me.hashUtilsCls.unionHash(name2node, nodeArraysTmp.name2node);
+                    if(Object.keys(ic.chainsMapping).length > 0) { 
+                        // common interactions
+                        bCommonDiff = 1;
+                        nodeArraysTmp = ic.getGraphCls.getNodeTopBottom(nameHashSplit[i], name2node, undefined, bCommonDiff, nameHashSplitCommon[i]);
+                        nodeArray1SplitCommon[i] = nodeArraysTmp.nodeArray1;
+                        nodeArray2SplitCommon[i] = nodeArraysTmp.nodeArray2;
+                        name2node = me.hashUtilsCls.unionHash(name2node, nodeArraysTmp.name2node);
 
-                    // different interactions
-                    bCommonDiff = 2;
-                    nodeArraysTmp = ic.getGraphCls.getNodeTopBottom(nameHashSplit[i], name2node, undefined, bCommonDiff, nameHashSplitDiff[i]);
-                    nodeArray1SplitDiff[i] = nodeArraysTmp.nodeArray1;
-                    nodeArray2SplitDiff[i] = nodeArraysTmp.nodeArray2;
-                    name2node = me.hashUtilsCls.unionHash(name2node, nodeArraysTmp.name2node);
+                        // different interactions
+                        bCommonDiff = 2;
+                        nodeArraysTmp = ic.getGraphCls.getNodeTopBottom(nameHashSplit[i], name2node, undefined, bCommonDiff, nameHashSplitDiff[i]);
+                        nodeArray1SplitDiff[i] = nodeArraysTmp.nodeArray1;
+                        nodeArray2SplitDiff[i] = nodeArraysTmp.nodeArray2;
+                        name2node = me.hashUtilsCls.unionHash(name2node, nodeArraysTmp.name2node);
+                    }
                     
                     len1Split[i] = nodeArray1Split[i].length;
                     len2Split[i] = nodeArray2Split[i].length;
@@ -16970,19 +22121,19 @@ var icn3d = (function (exports) {
                     //width =(Math.max(len1b, len2b) + 2) *(r + gap) + 2 * marginX + legendWidth;
                     heightAll =(me.utilsCls.sumArray(len1Split) + 2*strucArray.length) *(r + gap) + 4 * marginY 
                       + 2 * legendWidth + textHeight*strucArray.length;
-                    // show common and diff interaction as well
-                    heightAll *= 3;
 
                     width = (maxWidth + 2) * (r + gap) + 2 * marginX + legendWidth;
                       
                 } else {
                     height = 110 + textHeight;
                     heightAll = height * strucArray.length;
-                    // show common and diff interaction as well
-                    heightAll *= 3;
 
                     width = (maxWidth + 2) * (r + gap) + 2 * marginX;
                 }
+
+                // show common and diff interaction as well
+                if(Object.keys(ic.chainsMapping).length > 0) heightAll *= 3;
+
                 let  id, graphWidth;
                 if(bScatterplot) {
                     ic.scatterplotWidth = 2 * width;
@@ -17005,17 +22156,19 @@ var icn3d = (function (exports) {
                 heightFinal = result.heightFinal;
                 html += result.html;
 
-                bCommonDiff = 1;
-                result = this.drawGraphPerType(bCommonDiff, structureArray, bScatterplot, nodeArray1SplitCommon, nodeArray2SplitCommon, linkArraySplitCommon, name2node, heightFinal, height, textHeight, len1Split, r, gap, marginY);
+                if(Object.keys(ic.chainsMapping).length > 0) {
+                    bCommonDiff = 1;
+                    result = this.drawGraphPerType(bCommonDiff, structureArray, bScatterplot, nodeArray1SplitCommon, nodeArray2SplitCommon, linkArraySplitCommon, name2node, heightFinal, height, textHeight, len1Split, r, gap, marginY);
 
-                heightFinal = result.heightFinal;
-                html += result.html;
+                    heightFinal = result.heightFinal;
+                    html += result.html;
 
-                bCommonDiff = 2;
-                result = this.drawGraphPerType(bCommonDiff, structureArray, bScatterplot, nodeArray1SplitDiff, nodeArray2SplitDiff, linkArraySplitDiff, name2node, heightFinal, height, textHeight, len1Split, r, gap, marginY);
+                    bCommonDiff = 2;
+                    result = this.drawGraphPerType(bCommonDiff, structureArray, bScatterplot, nodeArray1SplitDiff, nodeArray2SplitDiff, linkArraySplitDiff, name2node, heightFinal, height, textHeight, len1Split, r, gap, marginY);
 
-                heightFinal = result.heightFinal;
-                html += result.html;
+                    heightFinal = result.heightFinal;
+                    html += result.html;
+                }
                 
                 html += "</svg>";
             } else {
@@ -17667,7 +22820,7 @@ var icn3d = (function (exports) {
                       dataType: "script",
                       cache: true,
                       tryCount : 0,
-                      retryLimit : 1,
+                      retryLimit : 0, //1
                       success: function(data) {
                            ic.bD3 = true;
 
@@ -18290,39 +23443,52 @@ var icn3d = (function (exports) {
             }
         }
 
-        showHydrogens() { let ic = this.icn3d; ic.icn3dui;
-           // get hydrogen atoms for currently selected atoms
-           for(let i in ic.hAtoms) {
-               let atom = ic.atoms[i];
-               if(atom.name !== 'H') {
-                   ic.atoms[atom.serial].bonds = ic.atoms[atom.serial].bonds2.concat();
-                   ic.atoms[atom.serial].bondOrder = ic.atoms[atom.serial].bondOrder2.concat();
-                   for(let j = 0, jl = ic.atoms[atom.serial].bonds.length; j < jl; ++j) {
-                       let serial = ic.atoms[atom.serial].bonds[j];
-                       if(ic.atoms[serial].name === 'H') {
-                           ic.dAtoms[serial] = 1;
-                           ic.hAtoms[serial] = 1;
-                       }
-                   }
-               }
-           }
+        showHydrogens() { let ic = this.icn3d, me = ic.icn3dui;
+            // get hydrogen atoms for currently selected atoms
+            if(me.cfg.cid !== undefined) {
+                for(let i in ic.hAtoms) {
+                        let atom = ic.atoms[i];
+                
+                        //if(atom.name !== 'H') {
+                        if(atom.elem.substr(0, 1) !== 'H') {
+                            ic.atoms[atom.serial].bonds = ic.atoms[atom.serial].bonds2.concat();
+                            ic.atoms[atom.serial].bondOrder = ic.atoms[atom.serial].bondOrder2.concat();
+                            for(let j = 0, jl = ic.atoms[atom.serial].bonds.length; j < jl; ++j) {
+                                let serial = ic.atoms[atom.serial].bonds[j];
+                                //if(ic.atoms[serial].name === 'H') {
+                                if(atom.elem.substr(0, 1) === 'H') {
+                                    ic.dAtoms[serial] = 1;
+                                    ic.hAtoms[serial] = 1;
+                                }
+                            }
+                        }
+                }
+            }
+            else {
+                for(let serial in ic.atoms) {
+                    ic.dAtoms[serial] = 1;
+                    ic.hAtoms[serial] = 1;
+                }            
+            }
         }
+
         hideHydrogens() { let ic = this.icn3d; ic.icn3dui;
            // remove hydrogen atoms for currently selected atoms
            for(let i in ic.hAtoms) {
                let atom = ic.atoms[i];
-               if(atom.name === 'H') {
+               //if(atom.name === 'H') {
+               if(atom.elem.substr(0, 1) === 'H') {
                    if(ic.atoms[atom.serial].bonds.length > 0) {
                        let otherSerial = ic.atoms[atom.serial].bonds[0];
                        //ic.atoms[atom.serial].bonds = [];
-                       let pos = ic.atoms[otherSerial].bonds.indexOf(atom.serial);
+                       let pos = (ic.atoms[otherSerial].bonds) ? ic.atoms[otherSerial].bonds.indexOf(atom.serial) : -1;
                        if(pos !== -1) {
                            ic.atoms[otherSerial].bonds.splice(pos, 1);
-                           ic.atoms[otherSerial].bondOrder.splice(pos, 1);
+                           if(ic.atoms[otherSerial].bondOrder) ic.atoms[otherSerial].bondOrder.splice(pos, 1);
                        }
                    }
                    delete ic.dAtoms[atom.serial];
-                   delete ic.hAtoms[atom.serial];
+                   delete ic.hAtoms[atom.serial];            
                }
            }
         }
@@ -18543,6 +23709,10 @@ var icn3d = (function (exports) {
         colorSpectrum(atoms) { let ic = this.icn3d, me = ic.icn3dui;
             let idx = 0;
             let cnt = 0;
+
+            // for selected atoms
+            atoms = me.hashUtilsCls.intHash(atoms, ic.hAtoms);
+
             for (let i in atoms) {
                 let atom = ic.atoms[i];
                 if(!atom.het) ++cnt;
@@ -18561,6 +23731,10 @@ var icn3d = (function (exports) {
         colorRainbow(atoms) { let ic = this.icn3d, me = ic.icn3dui;
             let idx = 0;
             let cnt = 0;
+
+            // for selected atoms
+            atoms = me.hashUtilsCls.intHash(atoms, ic.hAtoms);
+
             for (let i in atoms) {
                 let atom = ic.atoms[i];
                 if(!atom.het) ++cnt;
@@ -18573,6 +23747,31 @@ var icn3d = (function (exports) {
 
                 ic.atomPrevColors[i] = atom.color;
             }
+        }
+
+        setColorBySets(nameArray, bSpectrum) { let ic = this.icn3d, me = ic.icn3dui;
+            let idx = 0;
+            let cnt = nameArray.length;
+
+            let lastTerSerialInv = (cnt > 1) ? 1 / (cnt - 1) : 1;
+            for(let i = 0, il = nameArray.length; i < il; ++i) {
+                let atomSet = ic.definedSetsCls.getAtomsFromNameArray([nameArray[i]]);
+                for (let serial in atomSet) {
+                    let atom = ic.atoms[serial];
+
+                    if(bSpectrum) {
+                        atom.color = me.parasCls.thr().setHSL(3 / 4 * (1 - idx * lastTerSerialInv), 1, 0.45);
+                    }
+                    else { // rainbow
+                        atom.color = me.parasCls.thr().setHSL(3 / 4 *  idx * lastTerSerialInv, 1, 0.45);
+                    }
+
+                    ic.atomPrevColors[serial] = atom.color;
+                }
+                ++idx;
+            }
+
+            ic.drawCls.draw();
         }
 
         //Set atom color according to the definition in options (options.color).
@@ -18621,6 +23820,31 @@ var icn3d = (function (exports) {
                         this.colorSpectrum(ic.chains[chainid]);
                     }
                     break;
+
+                case 'structure':
+                    let index = -1, prevStructure = '', colorLength = me.parasCls.stdChainColors.length;
+                    for (let i in atoms) {
+                        let atom = ic.atoms[i];
+
+                        if(atom.structure != prevStructure) {
+                            ++index;
+
+                            index = index % colorLength;
+                        }
+
+                        if(!atom.het) {
+                            atom.color = me.parasCls.stdChainColors[index];
+                            ic.atomPrevColors[i] = atom.color;
+                        }
+                        else {
+                            atom.color = me.parasCls.atomColors[atom.elem];
+                            ic.atomPrevColors[i] = atom.color;
+                        }
+
+                        prevStructure = atom.structure;
+                    }
+                    break;
+
                 case 'chain':
                     if(ic.chainsColor !== undefined && Object.keys(ic.chainsColor).length > 0) { // mmdb input
                         this.setMmdbChainColor();
@@ -18927,9 +24151,11 @@ var icn3d = (function (exports) {
                     }
 
                     let  legendHtml = me.htmlCls.clickMenuCls.setLegendHtml(true);
-                    $("#" + me.pre + "legend").removeClass('icn3d-legend');
-                    $("#" + me.pre + "legend").addClass('icn3d-legend2');
-                    $("#" + me.pre + "legend").html(legendHtml).show();
+                    //$("#" + me.pre + "legend").removeClass('icn3d-legend');
+                    //$("#" + me.pre + "legend").addClass('icn3d-legend2');
+                    //$("#" + me.pre + "legend").html(legendHtml).show();
+                    $("#" + me.pre + "dl_legend").html(legendHtml);
+                    me.htmlCls.dialogCls.openDlg('dl_legend', 'Color legend');
 
                     break;
 
@@ -20318,7 +25544,7 @@ var icn3d = (function (exports) {
               dataType: "text",
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               beforeSend: function() {
                   ic.ParserUtilsCls.showLoading();
               },
@@ -20522,7 +25748,7 @@ var icn3d = (function (exports) {
               dataType: "jsonp",
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               beforeSend: function() {
                   ic.ParserUtilsCls.showLoading();
               },
@@ -20889,7 +26115,7 @@ var icn3d = (function (exports) {
               dataType: "json",
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               success: function(data) {
                   let symmetryArray = data.rcsb_struct_symmetry;
                   let rot, centerFrom, centerTo;
@@ -21073,7 +26299,9 @@ var icn3d = (function (exports) {
 
         // modified from iview (http://istar.cse.cuhk.edu.hk/iview/)
         //This PDB parser feeds the viewer with the content of a PDB file, pdbData.
-        loadPDB(src, pdbid, bOpm, bVector, bMutation, bAppend) { let  ic = this.icn3d, me = ic.icn3dui;
+        loadPDB(src, pdbid, bOpm, bVector, bMutation, bAppend, type, bLastQuery) { let  ic = this.icn3d, me = ic.icn3dui;
+            let hAtoms = {};
+
             let bNMR = false;
             let  lines = src.split('\n');
 
@@ -21123,18 +26351,20 @@ var icn3d = (function (exports) {
 
             //let  chainMissingResidueArray = {}
 
-            let  id = (pdbid) ? pdbid : 'stru';
+            let  id = (pdbid) ? pdbid : 'STRU';
 
             let prevMissingChain = '';
             let  CSerial, prevCSerial, OSerial, prevOSerial;
 
-            let  structure = "stru";
+            let  structure = "STRU";
+
+            let bHeader = false;
 
             for (let i in lines) {
                 let  line = lines[i];
                 let  record = line.substr(0, 6);
 
-                if (record === 'HEADER') {
+                if (record === 'HEADER' && !bHeader) {              
                     // if(bOpm === undefined || !bOpm) ic.bSecondaryStructure = true;
 
                     ///id = line.substr(62, 4).trim();
@@ -21142,22 +26372,24 @@ var icn3d = (function (exports) {
 
                     if(id == '') {
                         if(bAppend) {
-                            id = "stru";
+                            id = "STRU";
                         }
                         else {
-                            //if(!ic.inputid) ic.inputid = 'stru';
-                            id = (ic.inputid && ic.inputid.indexOf('/') == -1) ? ic.inputid.substr(0, 10) : "stru"; //ic.filename.substr(0, 4);
+                            //if(!ic.inputid) ic.inputid = 'STRU';
+                            id = (ic.inputid && ic.inputid.indexOf('/') == -1) ? ic.inputid.substr(0, 10) : "STRU"; //ic.filename.substr(0, 4);
                         }
                     }
 
                     structure = id;
 
-                    if(id == 'stru' || bMutation || (bAppend && id.length != 4)) { // bMutation: side chain prediction
-                        structure = (moleculeNum === 1) ? id : id + moleculeNum.toString();
+                    //if(id == 'STRU' || bMutation || (bAppend && id.length != 4)) { // bMutation: side chain prediction
+                    if(id == 'STRU' || bMutation) { // bMutation: side chain prediction
+                            structure = (moleculeNum === 1) ? id : id + moleculeNum.toString();
                     }
 
                     ic.molTitle = '';
 
+                    bHeader = true; // read the first header if there are multiple
                 } else if (record === 'TITLE ') {
                     let  name = line.substr(10);
                     ic.molTitle += name.trim() + " ";
@@ -21202,42 +26434,9 @@ var icn3d = (function (exports) {
 
                       if(j === startResi) sheetStart.push(resid);
                       if(j === endResi) sheetEnd.push(resid);
-                    }
-    /*
-                    sheets.push({
-                        structure: structure,
-                        chain: startChain,
-                        initialResidue: startResi,
-                        initialInscode: line.substr(26, 1),
-                        terminalResidue: endResi,
-                        terminalInscode: line.substr(37, 1),
-                    });
-    */                
+                    }           
                 } else if (record === 'HBOND ') {
                     if(bOpm === undefined || !bOpm) ic.bSecondaryStructure = true;
-        /*
-                    //HBOND A 1536   N2 A   59  ND2  -19.130  83.151  52.266 -18.079  81.613  49.427    3.40
-                    bCalculateHbond = false;
-
-                    let  chemicalChain = line.substr(6, 1);
-                    let  chemicalResi = line.substr(8, 4).trim();
-                    let  chemicalAtom = line.substr(14, 4).trim();
-                    let  proteinChain = line.substr(18, 1);
-                    let  proteinResi = line.substr(20, 4).trim();
-                    let  proteinAtom = line.substr(25, 4).trim();
-
-                    let  chemical_x = parseFloat(line.substr(30, 8));
-                    let  chemical_y = parseFloat(line.substr(38, 8));
-                    let  chemical_z = parseFloat(line.substr(46, 8));
-                    let  protein_x = parseFloat(line.substr(54, 8));
-                    let  protein_y = parseFloat(line.substr(62, 8));
-                    let  protein_z = parseFloat(line.substr(70, 8));
-
-                    let  dist = line.substr(78, 8).trim();
-
-                    ic.hbondpnts.push(new THREE.Vector3(chemical_x, chemical_y, chemical_z));
-                    ic.hbondpnts.push(new THREE.Vector3(protein_x, protein_y, protein_z));
-        */
                 } else if (record === 'SSBOND') {
                     ic.bSsbondProvided = true;
                     //SSBOND   1 CYS E   48    CYS E   51                          2555
@@ -21312,11 +26511,12 @@ var icn3d = (function (exports) {
                     ic.organism = ic.organism.substr(0, ic.organism.length - 1);
                 } else if (record === 'ENDMDL') {
                     ++moleculeNum;
-                    id = 'stru';
+                    id = 'STRU';
 
                     structure = id;
-                    if(id == 'stru' || bMutation || (bAppend && id.length != 4)) { // bMutation: side chain prediction
-                        structure = (moleculeNum === 1) ? id : id + moleculeNum.toString();
+                    //if(id == 'STRU' || bMutation || (bAppend && id.length != 4)) { // bMutation: side chain prediction
+                    if(id == 'STRU' || bMutation) { // bMutation: side chain prediction
+                            structure = (moleculeNum === 1) ? id : id + moleculeNum.toString();
                     }
 
                     //helices = [];
@@ -21329,11 +26529,19 @@ var icn3d = (function (exports) {
                         helixStart = [];
                         helixEnd = [];
                     }
+
+                    bHeader = false; // reinitialize to read structure name from the header
                 } else if (record === 'JRNL  ') {
                     if(line.substr(12, 4) === 'PMID') {
                         ic.pmid = line.substr(19).trim();
                     }
                 } else if (record === 'ATOM  ' || record === 'HETATM') {
+                    structure = id;
+                    //if(id == 'STRU' || bMutation || (bAppend && id.length != 4)) { // bMutation: side chain prediction
+                    if(id == 'STRU' || bMutation) { // bMutation: side chain prediction
+                            structure = (moleculeNum === 1) ? id : id + moleculeNum.toString();
+                    }
+
                     let  alt = line.substr(16, 1);
                     //if (alt !== " " && alt !== "A") continue;
 
@@ -21423,6 +26631,7 @@ var icn3d = (function (exports) {
 
                     ic.dAtoms[serial] = 1;
                     ic.hAtoms[serial] = 1;
+                    hAtoms[serial] = 1;
 
                     // Assign secondary structures from the input
                     // if a residue is assigned both sheet and helix, it is assigned as sheet
@@ -21495,7 +26704,7 @@ var icn3d = (function (exports) {
                             chainsTmp = {};
 
                             if(ic.structures[structure.toString()] === undefined) ic.structures[structure.toString()] = [];
-                            ic.structures[structure.toString()].push(chainNum);
+                            if(!ic.structures[structure.toString()].includes(chainNum)) ic.structures[structure.toString()].push(chainNum);
 
                             if(ic.chainsSeq[chainNum] === undefined) ic.chainsSeq[chainNum] = [];
 
@@ -21575,22 +26784,7 @@ var icn3d = (function (exports) {
 
             // calculate disulfide bonds for PDB files
             if(!ic.bSsbondProvided) {
-                // get all Cys residues
-                let  structure2cys_resid = {};
-                for(let chainid in ic.chainsSeq) {
-                    let  seq = ic.chainsSeq[chainid];
-                    let  structure = chainid.substr(0, chainid.indexOf('_'));
-
-                    for(let i = 0, il = seq.length; i < il; ++i) {
-                        // each seq[i] = {"resi": 1, "name":"C"}
-                        if(seq[i].name == 'C') {
-                            if(structure2cys_resid[structure] == undefined) structure2cys_resid[structure] = [];
-                            structure2cys_resid[structure].push(chainid + '_' + seq[i].resi);
-                        }
-                    }
-                }
-
-                this.setSsbond(structure2cys_resid);
+                this.setSsbond();
             }
 
             // remove the reference
@@ -21639,6 +26833,10 @@ var icn3d = (function (exports) {
 
                         ic.secondaries[atom.structure + '_' + atom.chain + '_' + atom.resi] = 'o'; // nucleotide
                     }
+
+                    if(me.parasCls.nuclMainArray.indexOf(atom.name) === -1) {
+                        ic.ntbase[atom.serial] = 1;
+                    }
                   }
                   else {
                     if (atom.elem === 'P') {
@@ -21647,7 +26845,7 @@ var icn3d = (function (exports) {
 
                     ic.proteins[atom.serial] = 1;
                     if (atom.name === 'CA') ic.calphas[atom.serial] = 1;
-                    if (atom.name !== 'N' && atom.name !== 'CA' && atom.name !== 'C' && atom.name !== 'O') ic.sidec[atom.serial] = 1;
+                    if (atom.name !== 'N' && atom.name !== 'H' && atom.name !== 'CA' && atom.name !== 'HA' && atom.name !== 'C' && atom.name !== 'O') ic.sidec[atom.serial] = 1;
                   }
                 }
                 else if(atom.het) {
@@ -21684,7 +26882,7 @@ var icn3d = (function (exports) {
             } // end of for
 
             // reset lipid
-            for(resid in lipidResidHash) {
+            for(let resid in lipidResidHash) {
                 let  atomHash = ic.residues[resid];
                 for(serial in atomHash) {
                     let  atom = ic.atoms[serial];
@@ -21695,7 +26893,7 @@ var icn3d = (function (exports) {
 
                     delete ic.proteins[atom.serial];
                     if (atom.name === 'CA') delete ic.calphas[atom.serial];
-                    if (atom.name !== 'N' && atom.name !== 'CA' && atom.name !== 'C' && atom.name !== 'O') delete ic.sidec[atom.serial];
+                    if (atom.name !== 'N' && atom.name !== 'H' && atom.name !== 'CA' && atom.name !== 'HA' && atom.name !== 'C' && atom.name !== 'O') delete ic.sidec[atom.serial];
                 }
             }
 
@@ -21718,8 +26916,22 @@ var icn3d = (function (exports) {
             ic.oriMaxD = ic.maxD;
             ic.oriCenter = ic.center.clone();
 
+            if(type === 'target') {
+                ic.oriMaxD = ic.maxD;
+                ic.center1 = ic.center;
+            }
+            else if(type === 'query') {
+                if(ic.oriMaxD < ic.maxD) ic.oriMaxD = ic.maxD;
+
+                ic.center2 = ic.center;
+                ic.center = new THREE.Vector3(0,0,0);
+            }
+
             if(bVector) { // just need to get the vector of the largest chain
                 return this.getChainCalpha(ic.chains, ic.atoms);
+            }
+            else {
+                return hAtoms;
             }
         }
 
@@ -21795,7 +27007,23 @@ var icn3d = (function (exports) {
             }
         }
 
-        setSsbond(structure2cys_resid) { let ic = this.icn3d; ic.icn3dui;
+        setSsbond() { let ic = this.icn3d; ic.icn3dui;
+            // get all Cys residues
+            let  structure2cys_resid = {};
+
+            for(let chainid in ic.chainsSeq) {
+                let  seq = ic.chainsSeq[chainid];
+                let  structure = chainid.substr(0, chainid.indexOf('_'));
+
+                for(let i = 0, il = seq.length; i < il; ++i) {
+                    // each seq[i] = {"resi": 1, "name":"C"}
+                    if(seq[i].name == 'C') {
+                        if(structure2cys_resid[structure] == undefined) structure2cys_resid[structure] = [];
+                        structure2cys_resid[structure].push(chainid + '_' + seq[i].resi);
+                    }
+                }
+            }
+
             // determine whether there are disulfide bonds
             // disulfide bond is about 2.05 angstrom
             let  distMax = 4; //3; // https://icn3d.page.link/5KRXx6XYfig1fkye7
@@ -21920,7 +27148,7 @@ var icn3d = (function (exports) {
 
         //This function was used to parse atom "data" to set up parameters for the 3D viewer. "type" is mmcifid or mmdbid.
         //"id" is the MMDB ID or mmCIF ID.
-        loadAtomDataIn(data, id, type, seqalign, alignType, chainidInput, chainIndex, bLastQuery) { let  ic = this.icn3d, me = ic.icn3dui;
+        loadAtomDataIn(data, id, type, seqalign, alignType, chainidInput, chainIndex, bLastQuery, bNoSeqalign) { let  ic = this.icn3d, me = ic.icn3dui;
             //ic.init();
             ic.pmin = new THREE.Vector3( 9999, 9999, 9999);
             ic.pmax = new THREE.Vector3(-9999,-9999,-9999);
@@ -21928,12 +27156,14 @@ var icn3d = (function (exports) {
 
             let  atoms = data.atoms;
 
-            let  serialBase =(alignType === undefined || alignType === 'target') ? 0 : ic.lastTargetSerial;
+            //let  serialBase =(alignType === undefined || alignType === 'target') ? 0 : ic.lastTargetSerial;
+            let  serialBase = (ic.atoms) ? Object.keys(ic.atoms).length : 0;
+
             let  serial = serialBase;
 
             let  serial2structure = {}; // for "align" only
             let  mmdbid2pdbid = {}; // for "align" only
-
+    /*
             if(alignType === undefined || alignType === 'target') {
                 ic.pmid = data.pubmedId;
 
@@ -21943,6 +27173,11 @@ var icn3d = (function (exports) {
             else {
                 ic.pmid2 = data.pubmedId;
             }
+    */
+
+            ic.pmid = data.pubmedId;
+            if(ic.chainid2title === undefined) ic.chainid2title = {};
+            if(ic.chainid2sid === undefined) ic.chainid2sid = {};
 
             let chainid2kind = {}, chainid2color = {};
 
@@ -22001,16 +27236,11 @@ var icn3d = (function (exports) {
             }
             else { // mmdbid or mmcifid
                 if(data.descr !== undefined) ic.molTitle += data.descr.name;
-
                 if(type === 'mmdbid') {
                   let  pdbidTmp = data.pdbId;
                   let  chainHash = {};
 
-                  if(alignType == 'target') {
-                    ic.alignmolid2color = [];
-                    //ic.alignmolid2color[0] = {}
-                    //ic.alignmolid2color[1] = {}
-                  }
+                  if(ic.alignmolid2color === undefined) ic.alignmolid2color = [];
 
                   let  molidCnt = 1;
                   for(let molid in data.moleculeInfor) {
@@ -22063,7 +27293,7 @@ var icn3d = (function (exports) {
                   }
                 }
             }
-
+            
             let  atomid2serial = {};
             let  prevStructureNum = '', prevChainNum = '', prevResidueNum = '';
             let  structureNum = '', chainNum = '', residueNum = '';
@@ -22077,7 +27307,6 @@ var icn3d = (function (exports) {
             let  CSerial, prevCSerial, OSerial, prevOSerial;
 
             let  biopolymerChainsHash = {};
-
             for(let i in atoms) {
                 ++serial;
 
@@ -22197,7 +27426,7 @@ var icn3d = (function (exports) {
                     atm.resiNCBI = atm.ids.r;
                     ic.residNCBI2resid[chainNum + '_' + atm.resiNCBI] = chainNum + '_' + atm.resi;
                 }
-
+                
                 if(chainNum !== prevChainNum) {
                     prevResi = 0;
                 }
@@ -22215,26 +27444,9 @@ var icn3d = (function (exports) {
 
                 if(type === 'mmdbid') {
                     atm.coord = new THREE.Vector3(atm.coord[0], atm.coord[1], atm.coord[2]);
-                    if(ic.q_rotation !== undefined && ic.t_trans_add.length > 0 && !me.cfg.resnum && !me.cfg.resdef) {
-                        if(alignType === 'target') {
-                            atm.coord.x += ic.t_trans_add[chainIndex].x;
-                            atm.coord.y += ic.t_trans_add[chainIndex].y;
-                            atm.coord.z += ic.t_trans_add[chainIndex].z;
-                        }
-                        else if(alignType === 'query') {
-                            atm.coord.x -= ic.q_trans_sub[chainIndex].x;
-                            atm.coord.y -= ic.q_trans_sub[chainIndex].y;
-                            atm.coord.z -= ic.q_trans_sub[chainIndex].z;
-
-                            let  x = atm.coord.x * ic.q_rotation[chainIndex].x1 + atm.coord.y * ic.q_rotation[chainIndex].y1 + atm.coord.z * ic.q_rotation[chainIndex].z1;
-                            let  y = atm.coord.x * ic.q_rotation[chainIndex].x2 + atm.coord.y * ic.q_rotation[chainIndex].y2 + atm.coord.z * ic.q_rotation[chainIndex].z2;
-                            let  z = atm.coord.x * ic.q_rotation[chainIndex].x3 + atm.coord.y * ic.q_rotation[chainIndex].y3 + atm.coord.z * ic.q_rotation[chainIndex].z3;
-
-                            atm.coord.x = x;
-                            atm.coord.y = y;
-                            atm.coord.z = z;
-                        }
-                    }
+                    //if(ic.q_rotation !== undefined && ic.t_trans_add.length > 0 && !me.cfg.resnum && !me.cfg.resdef && chainIndex) {
+                    //    atm = ic.chainalignParserCls.transformAtom(atm, chainIndex, alignType);
+                    //}
                 }
                 else {
                     atm.coord = new THREE.Vector3(atm.coord.x, atm.coord.y, atm.coord.z);
@@ -22280,7 +27492,7 @@ var icn3d = (function (exports) {
                       ic.proteins[serial] = 1;
 
                       if(atm.name === 'CA') ic.calphas[serial] = 1;
-                      if(atm.name !== 'N' && atm.name !== 'CA' && atm.name !== 'C' && atm.name !== 'O') ic.sidec[serial] = 1;
+                      if(atm.name !== 'N' && atm.name !== 'H' && atm.name !== 'CA' && atm.name !== 'HA' && atm.name !== 'C' && atm.name !== 'O') ic.sidec[serial] = 1;
                     }
                     else if(bNucleotide) {
                       ic.nucleotides[serial] = 1;
@@ -22288,6 +27500,10 @@ var icn3d = (function (exports) {
                       //if(atm.name == 'P') ic.nucleotidesO3[serial] = 1;
                       if(atm.name == "O3'" || atm.name == "O3*" ||(bPhosphorusOnly && atm.name == 'P') ) {
                           ic.nucleotidesO3[serial] = 1;
+                      }
+
+                      if(me.parasCls.nuclMainArray.indexOf(atm.name) === -1) {
+                          ic.ntbase[serial] = 1;
                       }
                     }
 
@@ -22438,8 +27654,7 @@ var icn3d = (function (exports) {
                 prevMolid = molid;
             }
 
-            //if(alignType === 'target') ic.lastTargetSerial = serial;
-            ic.lastTargetSerial = serial;
+            //ic.lastTargetSerial = serial;
 
             // adjust biopolymer type
             for(let chainid in biopolymerChainsHash) {
@@ -22457,7 +27672,7 @@ var icn3d = (function (exports) {
                       ic.proteins[serial] = 1;
 
                       if(atm.name === 'CA') ic.calphas[serial] = 1;
-                      if(atm.name !== 'N' && atm.name !== 'CA' && atm.name !== 'C' && atm.name !== 'O') ic.sidec[serial] = 1;
+                      if(atm.name !== 'N' && atm.name !== 'H' && atm.name !== 'CA' && atm.name !== 'HA' && atm.name !== 'C' && atm.name !== 'O') ic.sidec[serial] = 1;
                     }
                     else if(biopolymerChainsHash[chainid] === 'nucleotide') {
                       ic.nucleotides[serial] = 1;
@@ -22465,6 +27680,10 @@ var icn3d = (function (exports) {
 
                       if(atm.name == "O3'" || atm.name == "O3*" ||(bPhosphorusOnly && atm.name == 'P') ) {
                           ic.nucleotidesO3[serial] = 1;
+                      }
+
+                      if(me.parasCls.nuclMainArray.indexOf(atm.name) === -1) {
+                        ic.ntbase[serial] = 1;
                       }
                     }
                 }
@@ -22537,7 +27756,12 @@ var icn3d = (function (exports) {
             ic.oriMaxD = ic.maxD;
 
             // set up disulfide bonds
-            if(type === 'mmdbid') {
+            if(type === 'align' || bLastQuery) { // calculate disulfide bonds
+                ic.ssbondpnts = {};
+
+                ic.loadPDBCls.setSsbond();
+            }
+            if(type === 'mmdbid' && Object.keys(ic.structures).length == 1) {
                 let  disulfideArray = data.disulfides;
 
                 if(disulfideArray !== undefined) {
@@ -22561,7 +27785,7 @@ var icn3d = (function (exports) {
                     }
                 }
             }
-            else if(type === 'mmcifid') {
+            else if(type === 'mmcifid' && Object.keys(ic.structures).length == 1) {
                 let  disulfideArray = data.disulfides;
 
                 if(disulfideArray !== undefined) {
@@ -22570,7 +27794,7 @@ var icn3d = (function (exports) {
                     for(let i = 0, il = disulfideArray.length; i < il; ++i) {
                         let  resid1 = disulfideArray[i][0];
                         let  resid2 = disulfideArray[i][1];
-
+                      
                         ic.ssbondpnts[id].push(resid1);
                         ic.ssbondpnts[id].push(resid2);
                     }
@@ -22588,31 +27812,10 @@ var icn3d = (function (exports) {
                             let  ori_resid = ic.ssbondpnts[id][j];
                             let  pos = ori_resid.indexOf('_');
                             let  resid = structure + ori_resid.substr(pos);
-
                             ic.ssbondpnts[structure].push(resid);
                         }
                     }
                 }
-            }
-            else if(type === 'align') { // calculate disulfide bonds
-                // get all Cys residues
-                let  structure2cys_resid = {};
-                for(let chainid in ic.chainid2seq) {
-                    if(chainid2kind[chainid] == 'protein') {
-                        let  seq = ic.chainid2seq[chainid];
-                        let  structure = chainid.substr(0, chainid.indexOf('_'));
-
-                        for(let i = 0, il = seq.length; i < il; ++i) {
-                            // each seq[i] = ["1","V","VAL NH3+"], //[1,"1","V","VAL NH3+"],
-                            if(seq[i][1] == 'C') {
-                                if(structure2cys_resid[structure] == undefined) structure2cys_resid[structure] = [];
-                                structure2cys_resid[structure].push(chainid + '_' + seq[i][0]);
-                            }
-                        }
-                    }
-                }
-
-                ic.loadPDBCls.setSsbond(structure2cys_resid);
             }
 
             if(type === 'mmcifid') {
@@ -22626,23 +27829,34 @@ var icn3d = (function (exports) {
             // display the structure right away. load the mns and sequences later
         //        setTimeout(function(){
             let  hAtoms = {};
+        
             if(type === 'align' && seqalign !== undefined && ic.bFullUi) {
                 ic.setSeqAlignCls.setSeqAlign(seqalign, data.alignedStructures);
             } // if(align
-            else if(type === 'mmdbid' && alignType === 'query' && ic.bFullUi && ic.q_rotation !== undefined && !me.cfg.resnum && !me.cfg.resdef) {
-                ic.setSeqAlignCls.setSeqAlignChain(chainidInput, chainIndex);
+            else if(type === 'mmdbid' && alignType === 'query' && ic.bFullUi && ic.q_rotation !== undefined 
+                && !me.cfg.resnum && !me.cfg.resdef && !bNoSeqalign) {
 
-                let  bReverse = false;
-                let  seqObj = me.htmlCls.alignSeqCls.getAlignSequencesAnnotations(Object.keys(ic.alnChains), undefined, undefined, false, undefined, bReverse);
-                let  oriHtml = $("#" + ic.pre + "dl_sequence2").html();
+                if(chainIndex) {
+                    ic.setSeqAlignCls.setSeqAlignChain(chainidInput, chainIndex);
 
+                    let  bReverse = false;
+                    let  seqObj = me.htmlCls.alignSeqCls.getAlignSequencesAnnotations(Object.keys(ic.alnChains), undefined, undefined, false, undefined, bReverse);
+                    let  oriHtml = $("#" + ic.pre + "dl_sequence2").html();
+
+                    hAtoms = ic.hAtoms;
+
+                    $("#" + ic.pre + "dl_sequence2").html(oriHtml + seqObj.sequencesHtml);
+                    $("#" + ic.pre + "dl_sequence2").width(me.htmlCls.RESIDUE_WIDTH * seqObj.maxSeqCnt + 200);
+                }
+                else {            
+                    hAtoms = ic.hAtoms;
+                }
+            }
+            else if(type === 'mmdbid' && alignType === 'target') {
                 hAtoms = ic.hAtoms;
-
-                $("#" + ic.pre + "dl_sequence2").html(oriHtml + seqObj.sequencesHtml);
-                $("#" + ic.pre + "dl_sequence2").width(me.htmlCls.RESIDUE_WIDTH * seqObj.maxSeqCnt + 200);
             }
 
-            if(type === 'mmdbid' &&(alignType === 'target' || alignType === 'query') && ic.q_rotation === undefined) {
+            if(type === 'mmdbid' && (alignType === 'target' || alignType === 'query') && ic.q_rotation === undefined) {
                 if(alignType === 'target' || alignType === 'query') {
                     for(let i in atoms) {
                         let  atom = atoms[i];
@@ -22703,7 +27917,7 @@ var icn3d = (function (exports) {
               dataType: 'text',
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               beforeSend: function() {
                   ic.ParserUtilsCls.showLoading();
               },
@@ -23325,7 +28539,7 @@ var icn3d = (function (exports) {
           let ajaxArray = [];
 
           //let url = me.htmlCls.baseUrl + "mmcifparser/mmcifparser.cgi";
-          let url = "../mmcifparser/mmcifparser.cgi";
+          let url = "/Structure/mmcifparser/mmcifparser.cgi";
           for(let i = 0, il = struArray.length; i < il; ++i) {
                let pdbStr = '';
     ///           pdbStr += ic.saveFileCls.getPDBHeader(i);
@@ -23477,6 +28691,7 @@ var icn3d = (function (exports) {
 
             ic.pdbParserCls.loadPdbDataRender(bAppend);
 
+            if(ic.deferredMmdbaf !== undefined) ic.deferredMmdbaf.resolve();
             if(ic.deferredSecondary !== undefined) ic.deferredSecondary.resolve();
         }
     }
@@ -23514,7 +28729,7 @@ var icn3d = (function (exports) {
               dataType: dataType,
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               beforeSend: function() {
                   ic.ParserUtilsCls.showLoading();
               },
@@ -23526,6 +28741,9 @@ var icn3d = (function (exports) {
                   ic.deferredOpm = $.Deferred(function() {
                       //ic.loadPdbOpmData(data, pdbid);
                       if(bAf) {
+                          // add UniProt ID into the header
+                          let header = 'HEADER                                                        ' + pdbid + '\n';
+                          data = header + data;
                           ic.opmParserCls.parseAtomData(data, pdbid, undefined, 'pdb', undefined);
                       }
                       else {
@@ -23573,7 +28791,7 @@ var icn3d = (function (exports) {
               dataType: dataType,
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               beforeSend: function() {
                   ic.ParserUtilsCls.showLoading();
               },
@@ -23619,8 +28837,14 @@ var icn3d = (function (exports) {
 
         //Atom "data" from PDB file was parsed to set up parameters for the 3D viewer. The deferred parameter
         //was resolved after the parsing so that other javascript code can be executed.
-        loadPdbData(data, pdbid, bOpm, bAppend) { let  ic = this.icn3d, me = ic.icn3dui;
-            ic.loadPDBCls.loadPDB(data, pdbid, bOpm, undefined, undefined, bAppend); // defined in the core library
+        loadPdbData(data, pdbid, bOpm, bAppend, type, bLastQuery, bNoDssp) { let  ic = this.icn3d, me = ic.icn3dui;
+            if(!bAppend && (type === undefined || type === 'target')) {
+                // if a command contains "load...", the commands should not be cleared with init()
+                let bKeepCmd = (ic.bCommandLoad) ? true : false;
+                if(!ic.bStatefile) ic.init(bKeepCmd);
+            }
+
+            let hAtoms = ic.loadPDBCls.loadPDB(data, pdbid, bOpm, undefined, undefined, bAppend, type, bLastQuery); // defined in the core library
 
             if(me.cfg.opmid === undefined) ic.ParserUtilsCls.transformToOpmOri(pdbid);
 
@@ -23656,17 +28880,23 @@ var icn3d = (function (exports) {
             }
 
     //        if(!ic.bSecondaryStructure && Object.keys(ic.proteins).length > 0) {
-            if((!ic.bSecondaryStructure || bCalcSecondary) && Object.keys(ic.proteins).length > 0) {
-              ic.deferredSecondary = $.Deferred(function() {
-                  let  bCalphaOnly = me.utilsCls.isCalphaPhosOnly(me.hashUtilsCls.hash2Atoms(ic.proteins, ic.atoms));//, 'CA');
-                  ic.dsspCls.applyDssp(bCalphaOnly, bAppend);
-              }); // end of me.deferred = $.Deferred(function() {
-
-              return ic.deferredSecondary.promise();
+            if((!ic.bSecondaryStructure || bCalcSecondary) && Object.keys(ic.proteins).length > 0 && !bNoDssp) {
+                this.applyCommandDssp(bAppend);
             }
             else {
                 this.loadPdbDataRender(bAppend);
             }
+
+            return hAtoms;
+        }
+
+        applyCommandDssp(bAppend) { let  ic = this.icn3d, me = ic.icn3dui;
+            ic.deferredSecondary = $.Deferred(function() {
+                let  bCalphaOnly = me.utilsCls.isCalphaPhosOnly(me.hashUtilsCls.hash2Atoms(ic.proteins, ic.atoms));//, 'CA');
+                ic.dsspCls.applyDssp(bCalphaOnly, bAppend);
+            }); // end of me.deferred = $.Deferred(function() {
+
+            return ic.deferredSecondary.promise();
         }
 
         loadPdbDataRender(bAppend) { let  ic = this.icn3d, me = ic.icn3dui;
@@ -24041,7 +29271,7 @@ var icn3d = (function (exports) {
                           ic.proteins[serial] = 1;
 
                           if(atomName === 'CA') ic.calphas[serial] = 1;
-                          if(atomName !== 'N' && atomName !== 'CA' && atomName !== 'C' && atomName !== 'O') ic.sidec[serial] = 1;
+                          if(atomName !== 'N' && atomName !== 'H' && atomName !== 'CA' && atomName !== 'HA' && atomName !== 'C' && atomName !== 'O') ic.sidec[serial] = 1;
                         }
                         else if(bNucleotide) {
                           ic.nucleotides[serial] = 1;
@@ -24051,6 +29281,10 @@ var icn3d = (function (exports) {
                           }
                           else if(!bFull && atomName == 'P') {
                               ic.nucleotidesO3[serial] = 1;
+                          }
+
+                          if(me.parasCls.nuclMainArray.indexOf(atomName) === -1) {
+                            ic.ntbase[serial] = 1;
                           }
                         }
                         else {
@@ -24500,7 +29734,7 @@ var icn3d = (function (exports) {
               dataType: dataType,
               cache: true,
               //tryCount : 0,
-              //retryLimit : 1,
+              //retryLimit : 0, //1
               success: function(opmdata) {
                   ic.selectedPdbid = mmdbidArray[0];
 
@@ -24527,7 +29761,7 @@ var icn3d = (function (exports) {
                   dataType: dataType,
                   cache: true,
                   //tryCount : 0,
-                  //retryLimit : 1,
+                  //retryLimit : 0, //1
                   success: function(opmdata) {
                       ic.selectedPdbid = mmdbidArray[1];
 
@@ -24589,7 +29823,7 @@ var icn3d = (function (exports) {
               dataType: dataType,
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               beforeSend: function() {
                   ic.ParserUtilsCls.showLoading();
               },
@@ -24623,7 +29857,7 @@ var icn3d = (function (exports) {
             let  thisClass = this;
             let  url, dataType;
 
-            if(!pdbid) pdbid = 'stru';
+            if(!pdbid) pdbid = 'STRU';
 
             url = "https://www.ncbi.nlm.nih.gov/Structure/mmdb/mmdb_strview.cgi?v=2&program=icn3d&opm&uid=" + pdbid.toLowerCase();
             dataType = "jsonp";
@@ -24633,7 +29867,7 @@ var icn3d = (function (exports) {
               dataType: dataType,
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               success: function(opmdata) {
                   thisClass.setOpmData(opmdata); // set ic.bOpm
 
@@ -24805,7 +30039,7 @@ var icn3d = (function (exports) {
             //ic.loadAtomDataCls.loadAtomDataIn(data, id, 'mmdbid', undefined, type);
         }
 
-        parseMmdbData(data, type, chainid, chainIndex, bLastQuery) { let ic = this.icn3d; ic.icn3dui;
+        parseMmdbData(data, type, chainid, chainIndex, bLastQuery, bNoTransformNoSeqalign) { let ic = this.icn3d; ic.icn3dui;
             if(type === undefined) {
                 //ic.deferredOpm = $.Deferred(function() {
                       let  id =(data.pdbId !== undefined) ? data.pdbId : data.mmdbId;
@@ -24817,12 +30051,12 @@ var icn3d = (function (exports) {
 
                 return;
             }
-            else {
+            else {        
                 this.parseMmdbDataPart1(data, type);
 
                 let  id =(data.pdbId !== undefined) ? data.pdbId : data.mmdbId;
 
-                let  hAtoms = ic.loadAtomDataCls.loadAtomDataIn(data, id, 'mmdbid', undefined, type, chainid, chainIndex, bLastQuery);
+                let  hAtoms = ic.loadAtomDataCls.loadAtomDataIn(data, id, 'mmdbid', undefined, type, chainid, chainIndex, bLastQuery, bNoTransformNoSeqalign);
 
                 this.loadMmdbOpmDataPart2(data, id, type);
 
@@ -24866,7 +30100,7 @@ var icn3d = (function (exports) {
               dataType: 'jsonp',
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               beforeSend: function() {
                   ic.ParserUtilsCls.showLoading();
               },
@@ -24895,7 +30129,7 @@ var icn3d = (function (exports) {
                       dataType: 'jsonp',
                       cache: true,
                       tryCount : 0,
-                      retryLimit : 1,
+                      retryLimit : 0, //1
                       beforeSend: function() {
                           ic.ParserUtilsCls.showLoading();
                       },
@@ -24994,7 +30228,7 @@ var icn3d = (function (exports) {
                 }
             }
 
-            if((me.cfg.align === undefined || me.cfg.chainalign === undefined) && Object.keys(ic.structures).length == 1) {
+            if((me.cfg.align === undefined || me.cfg.chainalign === undefined || me.cfg.mmdbafid === undefined) && Object.keys(ic.structures).length == 1) {
                 if($("#" + ic.pre + "alternateWrapper") !== null) $("#" + ic.pre + "alternateWrapper").hide();
             }
 
@@ -25056,7 +30290,7 @@ var icn3d = (function (exports) {
 
             if(type === undefined) ic.ParserUtilsCls.setYourNote(structure.toUpperCase() + '(MMDB) in iCn3D');
 
-            let bNCBI = (me.cfg.mmdbid || me.cfg.gi || me.cfg.align || me.cfg.chainalign || me.cfg.blast_rep_id);
+            let bNCBI = (me.cfg.mmdbid || me.cfg.gi || me.cfg.align || me.cfg.chainalign || me.cfg.mmdbafid || me.cfg.blast_rep_id);
 
             for(let molid in data.domains) {
                 let chain = data.domains[molid].chain;
@@ -25092,9 +30326,9 @@ var icn3d = (function (exports) {
 
                         for(let j = domainFrom; j <= domainTo; ++j) {
                             let resid;
+                            let residNCBI = chainid + '_' +(j+1).toString();
 
-                            if(bNCBI) {
-                                let residNCBI = chainid + '_' +(j+1).toString();
+                            if(bNCBI && ic.residNCBI2resid[residNCBI]) {
                                 resid = ic.residNCBI2resid[residNCBI];
                             }
                             else {
@@ -25132,7 +30366,7 @@ var icn3d = (function (exports) {
               dataType: 'json',
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               beforeSend: function() {
                   //ic.ParserUtilsCls.showLoading();
               },
@@ -25167,6 +30401,7 @@ var icn3d = (function (exports) {
             this.icn3d = icn3d;
         }
 
+        // realign, residue by residue
         realign() { let  ic = this.icn3d, me = ic.icn3dui;
             ic.selectionCls.saveSelectionPrep();
 
@@ -25175,7 +30410,7 @@ var icn3d = (function (exports) {
 
             ic.selectionCls.saveSelection(name, name);
 
-            let  structHash = {};
+            let  structHash = {}, struct2chain = {};
             ic.realignResid = {};
             let  lastStruResi = '';
             for(let serial in ic.hAtoms) {
@@ -25195,6 +30430,8 @@ var icn3d = (function (exports) {
 
                     ic.realignResid[atom.structure].push({'resid': atom.structure + '_' + atom.chain + '_' + atom.resi, 'resn': me.utilsCls.residueName2Abbr(atom.resn.substr(0, 3)).substr(0, 1)});
 
+                    struct2chain[atom.structure] = atom.structure + '_' + atom.chain;
+
                     lastStruResi = atom.structure + '_' + atom.resi;
                 }
             }
@@ -25202,14 +30439,31 @@ var icn3d = (function (exports) {
             let  structArray = Object.keys(structHash);
 
             let  toStruct = structArray[0];
-            let  fromStruct = structArray[1];
 
-            // transform from the second structure to the first structure
-            let  coordsFrom = structHash[fromStruct];
-            let  coordsTo = structHash[toStruct];
+            let chainidArray = [];
+            ic.qt_start_end = []; // reset the alignment
 
-            let  bKeepSeq = true;
-            ic.ParserUtilsCls.alignCoords(coordsFrom, coordsTo, fromStruct, bKeepSeq);
+            chainidArray.push(struct2chain[toStruct]);
+            for(let i = 1, il = structArray.length; i < il; ++i) {
+                let  fromStruct = structArray[i];
+
+                // transform from the second structure to the first structure
+                let  coordsFrom = structHash[fromStruct];
+                let  coordsTo = structHash[toStruct];
+
+                let  bKeepSeq = true;
+                //ic.ParserUtilsCls.alignCoords(coordsFrom, coordsTo, fromStruct, bKeepSeq);
+                ic.ParserUtilsCls.alignCoords(coordsFrom, coordsTo, fromStruct, bKeepSeq, struct2chain[toStruct], struct2chain[fromStruct]);
+                chainidArray.push(struct2chain[fromStruct]);
+            }
+
+                  // align seq
+            ic.hAtoms = ic.chainalignParserCls.setMsa(chainidArray);
+
+            name = 'protein_aligned';
+            ic.selectionCls.saveSelection(name, name);
+          
+            ic.transformCls.zoominSelection();
 
             ic.hlUpdateCls.updateHlAll();
         }
@@ -25217,7 +30471,6 @@ var icn3d = (function (exports) {
         parseChainRealignPredefined(chainidArray, struct2SeqHash, struct2CoorHash, struct2resid) { let  ic = this.icn3d, me = ic.icn3dui;
 
           let  toStruct = chainidArray[0].substr(0, chainidArray[0].indexOf('_')); //.toUpperCase();
-          toStruct = toStruct.toUpperCase();
 
           let  hAtoms = {};
 
@@ -25227,19 +30480,21 @@ var icn3d = (function (exports) {
           ic.setColorCls.setColorByOptions(ic.opts, ic.dAtoms);
 
           for(let index = 0, indexl = chainidArray.length - 1; index < indexl; ++index) {
+              let chainpair = chainidArray[0] + ',' + chainidArray[index + 1];
               let  fromStruct = chainidArray[index + 1].substr(0, chainidArray[index + 1].indexOf('_')); //.toUpperCase();
-              fromStruct = fromStruct.toUpperCase();
 
               if(toStruct == fromStruct) fromStruct += me.htmlCls.postfix;
 
-              let  seq1 = struct2SeqHash[toStruct];
-              let  seq2 = struct2SeqHash[fromStruct];
+              if(!struct2SeqHash[chainpair]) continue;
 
-              let  coord1 = struct2CoorHash[toStruct];
-              let  coord2 = struct2CoorHash[fromStruct];
+              let  seq1 = struct2SeqHash[chainpair][toStruct];
+              let  seq2 = struct2SeqHash[chainpair][fromStruct];
 
-              let  residArray1 = struct2resid[toStruct];
-              let  residArray2 = struct2resid[fromStruct];
+              let  coord1 = struct2CoorHash[chainpair][toStruct];
+              let  coord2 = struct2CoorHash[chainpair][fromStruct];
+
+              let  residArray1 = struct2resid[chainpair][toStruct];
+              let  residArray2 = struct2resid[chainpair][fromStruct];
 
               ic.realignResid[toStruct] = [];
               ic.realignResid[fromStruct] = [];
@@ -25253,11 +30508,17 @@ var icn3d = (function (exports) {
               let  chainFrom = chainidArray[index + 1];
 
               let  bChainAlign = true;
+              // set ic.qt_start_end in alignCoords()
               let  hAtomsTmp = ic.ParserUtilsCls.alignCoords(coord2, coord1, fromStruct, undefined, chainTo, chainFrom, index + 1, bChainAlign);
               hAtoms = me.hashUtilsCls.unionHash(hAtoms, hAtomsTmp);
           }
 
-          ic.chainalignParserCls.downloadChainalignmentPart3(undefined, chainidArray, hAtoms);
+          // align seq
+          ic.hAtoms = ic.chainalignParserCls.setMsa(chainidArray);
+          
+          ic.transformCls.zoominSelection();
+
+          ic.chainalignParserCls.downloadChainalignmentPart3(undefined, chainidArray, ic.hAtoms);
         }
 
         parseChainRealignData(dataArray, chainresiCalphaHash2, chainidArray, struct2SeqHash, struct2CoorHash, struct2resid, bRealign) { let  ic = this.icn3d, me = ic.icn3dui;
@@ -25357,11 +30618,13 @@ var icn3d = (function (exports) {
                   if(fromStruct === undefined && !me.cfg.command) {
                      alert('Please do not align residues in the same structure');
                   }
-                  else if((seq1.length < 6 || seq2.length < 6) && !me.cfg.command) {
-                     alert('These sequences are too short for alignment');
-                  }
-                  else if(seq1.length >= 6 && seq2.length >= 6 && !me.cfg.command) {
-                     alert('These sequences can not be aligned to each other');
+                  else if(seq1 && seq2) {
+                    if((seq1.length < 6 || seq2.length < 6) && !me.cfg.command) {
+                        alert('These sequences are too short for alignment');
+                    }
+                    else if(seq1.length >= 6 && seq2.length >= 6 && !me.cfg.command) {
+                        alert('These sequences can not be aligned to each other');
+                    }
                   }
               }
 
@@ -25371,19 +30634,34 @@ var icn3d = (function (exports) {
           }
 
           if(bRealign) {
-              ic.dAtoms = hAtoms;
-              ic.hAtoms = hAtoms;
+            // align seq
+            //ic.hAtoms = ic.chainalignParserCls.setMsa(chainidArray, bRealign);
+            ic.hAtoms = ic.chainalignParserCls.setMsa(chainidArray);
+            
+            ic.transformCls.zoominSelection();
 
-              ic.opts['color'] = 'identity';
-              //ic.setColorCls.setColorByOptions(ic.opts, ic.atoms);
-              ic.setColorCls.setColorByOptions(ic.opts, ic.hAtoms);
 
-              ic.drawCls.draw();
-              ic.hlUpdateCls.updateHlAll();
-              if(ic.deferredRealign !== undefined) ic.deferredRealign.resolve();
+            ic.dAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms); //hAtoms;
+            //ic.hAtoms = hAtoms;
+
+            ic.opts['color'] = 'identity';
+            //ic.setColorCls.setColorByOptions(ic.opts, ic.atoms);
+            ic.setColorCls.setColorByOptions(ic.opts, ic.hAtoms);
+
+            let name = 'protein_aligned';
+            ic.selectionCls.saveSelection(name, name);
+
+            ic.drawCls.draw();
+            ic.hlUpdateCls.updateHlAll();
+            if(ic.deferredRealign !== undefined) ic.deferredRealign.resolve();
           }
           else {
-              ic.chainalignParserCls.downloadChainalignmentPart3(chainresiCalphaHash2, chainidArray, hAtoms);
+            // align seq
+            ic.hAtoms = ic.chainalignParserCls.setMsa(chainidArray);
+            
+            ic.transformCls.zoominSelection();
+
+            ic.chainalignParserCls.downloadChainalignmentPart3(chainresiCalphaHash2, chainidArray, ic.hAtoms);
           }
         }
 
@@ -25400,7 +30678,78 @@ var icn3d = (function (exports) {
             }
 
             let  bRealign = true;
+            ic.qt_start_end = []; // reset the alignment
+
             this.realignChainOnSeqAlign(undefined, chainidArray, bRealign);
+        }
+
+        realignOnStructAlign() { let  ic = this.icn3d, me = ic.icn3dui;
+            // each 3D domain should have at least 3 secondary structures
+            let minSseCnt = 3;
+            let struct2domain = {};
+
+            for(let struct in ic.structures) {
+                struct2domain[struct] = {};
+                let chainidArray = ic.structures[struct];
+                for(let i = 0, il = chainidArray.length; i < il; ++i) {
+                    let chainid = chainidArray[i];
+                    let atoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.chains[chainid]);               
+                    let sseCnt = 0;
+                    for(let serial in atoms) {
+                        if(ic.atoms[serial].ssbegin) ++sseCnt;
+                        if(sseCnt == minSseCnt) {
+                            struct2domain[struct][chainid] = atoms;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            let ajaxArray = [], chainidPairArray = [];
+            let urlalign = me.htmlCls.baseUrl + "vastdyn/vastdyn.cgi";
+            let structArray = Object.keys(struct2domain);
+            for(let s = 0, sl = structArray.length; s < sl; ++s) {
+                let struct1 = structArray[s];
+                let chainidArray1 = Object.keys(struct2domain[struct1]);
+                if(chainidArray1.length == 0) continue;
+                for(let t = s+1, tl = structArray.length; t < tl; ++t) {
+                    let struct2 = structArray[t];
+                    let chainidArray2 = Object.keys(struct2domain[struct2]);
+                    if(chainidArray2.length == 0) continue;
+
+                    for(let i = 0, il = chainidArray1.length; i < il; ++i) {
+                        let chainid1 = chainidArray1[i];
+                        for(let j = 0, jl = chainidArray2.length; j < jl; ++j) {
+                            let chainid2 = chainidArray2[j];
+
+                            let jsonStr_t = ic.domain3dCls.getDomainJsonForAlign(struct2domain[struct1][chainid1]);
+                            let jsonStr_q = ic.domain3dCls.getDomainJsonForAlign(struct2domain[struct2][chainid2]);
+                          
+                            let alignAjax = $.ajax({
+                                url: urlalign,
+                                type: 'POST',
+                                data: {'domains1': jsonStr_q, 'domains2': jsonStr_t},
+                                dataType: 'jsonp',
+                                cache: true
+                            });
+
+                            ajaxArray.push(alignAjax);
+                            chainidPairArray.push(chainid1 + ',' + chainid2); // chainid2 is target
+                        }
+                    }
+                }
+            }
+
+            //https://stackoverflow.com/questions/14352139/multiple-ajax-calls-from-array-and-handle-callback-when-completed
+            //https://stackoverflow.com/questions/5518181/jquery-deferreds-when-and-the-fail-callback-arguments
+            $.when.apply(undefined, ajaxArray).then(function() {
+                let  dataArray =(chainidPairArray.length == 1) ? [arguments] : Array.from(arguments);
+                ic.qt_start_end = []; // reset the alignment
+                ic.chainalignParserCls.downloadChainalignmentPart2bRealign(dataArray, chainidPairArray);
+            })
+            .fail(function() {
+                alert("These structures can NOT be aligned to each other...");
+            });            
         }
 
         realignChainOnSeqAlign(chainresiCalphaHash2, chainidArray, bRealign, bPredefined) { let  ic = this.icn3d, me = ic.icn3dui;
@@ -25413,26 +30762,28 @@ var icn3d = (function (exports) {
             let  struct2CoorHash = {};
             let  struct2resid = {};
 
-            let  mmdbid_t;
+            let  mmdbid_t, chainid_t, base_t, base;
             let  ajaxArray = [];
-            let  url = 'https://www.ncbi.nlm.nih.gov/Structure/pwaln/pwaln.fcgi?from=chainalign';
+            let  url = me.htmlCls.baseUrl + 'pwaln/pwaln.fcgi?from=chainalign';
 
-            let  predefinedResArray, predefinedRes;
+            let  predefinedResArray, predefinedResPair;
 
             if(bPredefined) {
-                predefinedResArray = me.cfg.resdef.trim().replace(/\+/gi, ' ').split(' | ');
+                predefinedResArray = me.cfg.resdef.trim().replace(/\+/gi, ' ').split('; ');
 
-                if(predefinedResArray.length != chainidArray.length) {
+                if(predefinedResArray.length != chainidArray.length - 1) {
                    alert("Please make sure the number of chains and the lines of predefined residues are the same...");
                    return;
                 }
             }
 
+            let result, resiArray;
             for(let i = 0, il = chainidArray.length; i < il; ++i) {
-                if(bPredefined) predefinedRes = predefinedResArray[i].trim();
+                //if(bPredefined) predefinedRes = predefinedResArray[i].trim();
 
                 let  pos = chainidArray[i].indexOf('_');
                 let  mmdbid = chainidArray[i].substr(0, pos); //.toUpperCase();
+
                 if(!bRealign) mmdbid =  mmdbid.toUpperCase();
 
                 if(i == 0) {
@@ -25443,6 +30794,7 @@ var icn3d = (function (exports) {
                 }
 
                 let  chainid = mmdbid + chainidArray[i].substr(pos);
+                if(i == 0) chainid_t = chainid;
 
                 if(!ic.chainsSeq[chainid]) {
                     //alert("Please select one chain per structure and try it again...");
@@ -25451,131 +30803,127 @@ var icn3d = (function (exports) {
                     continue;
                 }
 
-                if(!struct2SeqHash.hasOwnProperty(mmdbid)) {
+                if(!struct2SeqHash.hasOwnProperty(mmdbid) && !bPredefined) {
                     struct2SeqHash[mmdbid] = '';
                     struct2CoorHash[mmdbid] = [];
                     struct2resid[mmdbid] = [];
                 }
+     
+                if(bPredefined) {
+                    base = parseInt(ic.chainsSeq[chainid][0].resi);
 
-                if(i == 0 || bPredefined) { // master
-                    let base = parseInt(ic.chainsSeq[chainid][0].resi);
-
-                    //let  resRange;
-                    //if(bRealign) {
-                    //    let  seqLen = ic.chainsSeq[chainid].length;
-                    //    let  lastResi = ic.chainsSeq[chainid][seqLen - 1].resi;
-                    //    resRange = base.toString() + '-' + lastResi.toString();
-                    //}
-
-                    let resiArray = [];
-                    if(bRealign) {
-                        //resiArray = [resRange];
-                        let residHash = ic.firstAtomObjCls.getResiduesFromAtoms(ic.hAtoms);
-                        for(var resid in residHash) {
-                            let resi = resid.substr(resid.lastIndexOf('_') + 1);
-
-                            let chainidTmp = resid.substr(0, resid.lastIndexOf('_'));
-                            if(chainidTmp == chainid) resiArray.push(resi);
-                        }
-                    }
-                    else if(bPredefined) {
-                        resiArray = predefinedRes.split(",");
+                    if(i == 0) { // master
+                        base_t = base;
                     }
                     else {
-                        resiArray = me.cfg.resnum.split(",");
-                    }
+                        predefinedResPair = predefinedResArray[i - 1].split(' | ');
 
-                    for(let j = 0, jl = resiArray.length; j < jl; ++j) {
-                        if(resiArray[j].indexOf('-') != -1) {
-                            let  startEnd = resiArray[j].split('-');
+                        let chainidpair = chainid_t + ',' + chainid;
+                        if(!struct2SeqHash[chainidpair]) struct2SeqHash[chainidpair] = {};
+                        if(!struct2CoorHash[chainidpair]) struct2CoorHash[chainidpair] = {};
+                        if(!struct2resid[chainidpair]) struct2resid[chainidpair] = {};
 
-                            for(let k = parseInt(startEnd[0]); k <= parseInt(startEnd[1]); ++k) {
-                                let seqIndex = k - base;
-                                if(ic.bNCBI) {
-                                    let atom = ic.firstAtomObjCls.getFirstAtomObj(ic.residues[chainid + '_' + k]);
-                                    if(atom && atom.resiNCBI) seqIndex = atom.resiNCBI - 1;
-                                }
+                        // master
+                        resiArray = predefinedResPair[0].split(",");
+                        result = thisClass.getSeqCoorResid(resiArray, chainid_t, base_t);
 
-                                // don't align solvent or chemicals
-                                if(!ic.chainsSeq[chainid][seqIndex] || me.parasCls.b62ResArray.indexOf(ic.chainsSeq[chainid][seqIndex].name.toUpperCase()) == -1) continue;
+                        if(!struct2SeqHash[chainidpair][mmdbid_t]) struct2SeqHash[chainidpair][mmdbid_t] = '';
+                        if(!struct2CoorHash[chainidpair][mmdbid_t]) struct2CoorHash[chainidpair][mmdbid_t] = [];
+                        if(!struct2resid[chainidpair][mmdbid_t]) struct2resid[chainidpair][mmdbid_t] = [];
 
-                                struct2SeqHash[mmdbid] += ic.chainsSeq[chainid][seqIndex].name.toUpperCase();
+                        struct2SeqHash[chainidpair][mmdbid_t] += result.seq;
+                        struct2CoorHash[chainidpair][mmdbid_t] = struct2CoorHash[chainidpair][mmdbid_t].concat(result.coor);
+                        struct2resid[chainidpair][mmdbid_t] = struct2resid[chainidpair][mmdbid_t].concat(result.resid);
 
-                                struct2CoorHash[mmdbid] = struct2CoorHash[mmdbid].concat(this.getResCoorArray(chainid + '_' + k));
+                        // slave
+                        resiArray = predefinedResPair[1].split(",");
+                        result = thisClass.getSeqCoorResid(resiArray, chainid, base);
+                        
+                        if(!struct2SeqHash[chainidpair][mmdbid]) struct2SeqHash[chainidpair][mmdbid] = '';
+                        if(!struct2CoorHash[chainidpair][mmdbid]) struct2CoorHash[chainidpair][mmdbid] = [];
+                        if(!struct2resid[chainidpair][mmdbid]) struct2resid[chainidpair][mmdbid] = [];
 
-                                struct2resid[mmdbid].push(chainid + '_' + k);
-                            }
-                        }
-                        else { // one residue
-                            let  k = parseInt(resiArray[j]);
-
-                            let seqIndex = k - base;
-                            if(ic.bNCBI) {
-                                let atom = ic.firstAtomObjCls.getFirstAtomObj(ic.residues[chainid + '_' + k]);
-                                if(atom && atom.resiNCBI) seqIndex = atom.resiNCBI - 1;
-                            }
-
-                            if(!ic.chainsSeq[chainid][seqIndex]) continue;
-
-                            struct2SeqHash[mmdbid] += ic.chainsSeq[chainid][seqIndex].name.toUpperCase();
-
-                            struct2CoorHash[mmdbid] = struct2CoorHash[mmdbid].concat(this.getResCoorArray(chainid + '_' + k));
-
-                            struct2resid[mmdbid].push(chainid + '_' + k);
-                        }
+                        struct2SeqHash[chainidpair][mmdbid] += result.seq;
+                        struct2CoorHash[chainidpair][mmdbid] = struct2CoorHash[chainidpair][mmdbid].concat(result.coor);
+                        struct2resid[chainidpair][mmdbid] = struct2resid[chainidpair][mmdbid].concat(result.resid);
                     }
                 }
                 else {
-                    // if selected both chains
-                    let bSelectedBoth = false;
-                    if(bRealign) {
-                        //resiArray = [resRange];
-                        let residHash = ic.firstAtomObjCls.getResiduesFromAtoms(ic.hAtoms);
-                        for(var resid in residHash) {
-                            //let resi = resid.substr(resid.lastIndexOf('_') + 1);
-                            let chainidTmp = resid.substr(0, resid.lastIndexOf('_'));
-                            if(chainidTmp == chainid) {
-                                bSelectedBoth = true;
+                    if(i == 0) { // master
+                        base = parseInt(ic.chainsSeq[chainid][0].resi);
 
-                                let resn = ic.firstAtomObjCls.getFirstAtomObj(ic.residues[resid]).resn;
-                                struct2SeqHash[mmdbid] += me.utilsCls.residueName2Abbr(resn);
+                        resiArray = [];
+                        if(bRealign) {
+                            //resiArray = [resRange];
+                            let residHash = ic.firstAtomObjCls.getResiduesFromAtoms(ic.hAtoms);
+                            for(var resid in residHash) {
+                                let resi = resid.substr(resid.lastIndexOf('_') + 1);
+
+                                let chainidTmp = resid.substr(0, resid.lastIndexOf('_'));
+                                if(chainidTmp == chainid) resiArray.push(resi);
+                            }
+                        }
+                        else if(me.cfg.resnum) {
+                            resiArray = me.cfg.resnum.split(",");
+                        }
+
+                        //if(!bPredefined) {
+                            result = thisClass.getSeqCoorResid(resiArray, chainid, base);
+                            struct2SeqHash[mmdbid] += result.seq;
+                            struct2CoorHash[mmdbid] = struct2CoorHash[mmdbid].concat(result.coor);
+                            struct2resid[mmdbid] = struct2resid[mmdbid].concat(result.resid);
+                        //}
+                    }
+                    else {
+                        // if selected both chains
+                        let bSelectedBoth = false;
+                        if(bRealign) {
+                            //resiArray = [resRange];
+                            let residHash = ic.firstAtomObjCls.getResiduesFromAtoms(ic.hAtoms);
+                            for(var resid in residHash) {
+                                //let resi = resid.substr(resid.lastIndexOf('_') + 1);
+                                let chainidTmp = resid.substr(0, resid.lastIndexOf('_'));
+                                if(chainidTmp == chainid) {
+                                    bSelectedBoth = true;
+
+                                    let resn = ic.firstAtomObjCls.getFirstAtomObj(ic.residues[resid]).resn;
+                                    struct2SeqHash[mmdbid] += me.utilsCls.residueName2Abbr(resn);
+
+                                    struct2CoorHash[mmdbid] = struct2CoorHash[mmdbid].concat(this.getResCoorArray(resid));
+
+                                    struct2resid[mmdbid].push(resid);
+                                }
+                            }
+                        }
+
+                        if(!bSelectedBoth) {
+                            for(let j = 0, jl = ic.chainsSeq[chainid].length; j < jl; ++j) {
+                                struct2SeqHash[mmdbid] += ic.chainsSeq[chainid][j].name;
+                                let  resid = chainid + '_' + ic.chainsSeq[chainid][j].resi;
 
                                 struct2CoorHash[mmdbid] = struct2CoorHash[mmdbid].concat(this.getResCoorArray(resid));
 
                                 struct2resid[mmdbid].push(resid);
                             }
                         }
+
+                        let  toStruct = mmdbid_t;
+                        let  fromStruct = mmdbid;
+
+                        let  seq1 = struct2SeqHash[toStruct];
+                        let  seq2 = struct2SeqHash[fromStruct];
+
+                        let  queryAjax = $.ajax({
+                            url: url,
+                            type: 'POST',
+                            data : {'targets': seq1, 'queries': seq2},
+                            dataType: 'jsonp',
+                            cache: true
+                        });
+
+                        ajaxArray.push(queryAjax);
                     }
-
-                    if(!bSelectedBoth) {
-                        for(let j = 0, jl = ic.chainsSeq[chainid].length; j < jl; ++j) {
-                            struct2SeqHash[mmdbid] += ic.chainsSeq[chainid][j].name;
-                            let  resid = chainid + '_' + ic.chainsSeq[chainid][j].resi;
-
-                            struct2CoorHash[mmdbid] = struct2CoorHash[mmdbid].concat(this.getResCoorArray(resid));
-
-                            struct2resid[mmdbid].push(resid);
-                        }
-                    }
-                }
-
-                if(i > 0 && !bPredefined) {
-                    let  toStruct = mmdbid_t;
-                    let  fromStruct = mmdbid;
-
-                    let  seq1 = struct2SeqHash[toStruct];
-                    let  seq2 = struct2SeqHash[fromStruct];
-
-                    let  queryAjax = $.ajax({
-                       url: url,
-                       type: 'POST',
-                       data : {'targets': seq1, 'queries': seq2},
-                       dataType: 'jsonp',
-                       cache: true
-                    });
-
-                    ajaxArray.push(queryAjax);
-                }
+                }        
             } // for
 
             if(bPredefined) {
@@ -25585,14 +30933,68 @@ var icn3d = (function (exports) {
                 //https://stackoverflow.com/questions/14352139/multiple-ajax-calls-from-array-and-handle-callback-when-completed
                 //https://stackoverflow.com/questions/5518181/jquery-deferreds-when-and-the-fail-callback-arguments
                 $.when.apply(undefined, ajaxArray).then(function() {
-                   let  dataArray =(chainidArray.length == 2) ? [arguments] : Array.from(arguments);
-                   thisClass.parseChainRealignData(Array.from(dataArray), chainresiCalphaHash2, chainidArray, struct2SeqHash, struct2CoorHash, struct2resid, bRealign);
+                    let  dataArray =(chainidArray.length == 2) ? [arguments] : Array.from(arguments);
+                    thisClass.parseChainRealignData(Array.from(dataArray), chainresiCalphaHash2, chainidArray, struct2SeqHash, struct2CoorHash, struct2resid, bRealign);
                 })
                 .fail(function() {
                    alert("The realignment did not work...");
                    //thisClass.parseChainRealignData(arguments, chainresiCalphaHash2, chainidArray, struct2SeqHash, struct2CoorHash, struct2resid, bRealign);
                 });
             }
+        }
+
+        getSeqCoorResid(resiArray, chainid, base) { let  ic = this.icn3d, me = ic.icn3dui;
+            let seq = '', coorArray = [], residArray = [];
+
+            for(let j = 0, jl = resiArray.length; j < jl; ++j) {
+                if(resiArray[j].indexOf('-') != -1) {
+                    let  startEnd = resiArray[j].split('-');
+
+                    for(let k = parseInt(startEnd[0]); k <= parseInt(startEnd[1]); ++k) {
+                        // from VAST neighbor page, use NCBI residue number
+                        //if(me.cfg.usepdbnum === false) k += base - 1;
+
+                        let seqIndex = k - base;
+                        if(ic.bNCBI) {
+                            let atom = ic.firstAtomObjCls.getFirstAtomObj(ic.residues[chainid + '_' + k]);
+                            if(atom && atom.resiNCBI) seqIndex = atom.resiNCBI - 1;
+                        }
+
+                        // don't align solvent or chemicals
+                        if(!ic.chainsSeq[chainid] || !ic.chainsSeq[chainid][seqIndex] || me.parasCls.b62ResArray.indexOf(ic.chainsSeq[chainid][seqIndex].name.toUpperCase()) == -1) continue;
+
+                        seq += ic.chainsSeq[chainid][seqIndex].name.toUpperCase();
+
+                        coorArray = coorArray.concat(this.getResCoorArray(chainid + '_' + k));
+
+                        residArray.push(chainid + '_' + k);
+                    }
+                }
+                else { // one residue
+                    let  k = parseInt(resiArray[j]);
+                    // from VAST neighbor page, use NCBI residue number
+                    //if(me.cfg.usepdbnum === false) k += base - 1;
+
+                    let seqIndex = k - base;
+                    if(ic.bNCBI) {
+                        let atom = ic.firstAtomObjCls.getFirstAtomObj(ic.residues[chainid + '_' + k]);
+                        if(atom && atom.resiNCBI) seqIndex = atom.resiNCBI - 1;
+                    }
+
+                    if(!ic.chainsSeq[chainid][seqIndex]) continue;
+
+                    let resCoorArray = this.getResCoorArray(chainid + '_' + k);
+                    //if(resCoorArray.length == 1 && resCoorArray[0] === undefined) continue;
+
+                    seq += ic.chainsSeq[chainid][seqIndex].name.toUpperCase();
+
+                    coorArray = coorArray.concat(resCoorArray);
+
+                    residArray.push(chainid + '_' + k);
+                }
+            }
+
+            return {seq: seq, coor: coorArray, resid: residArray};
         }
 
         getResCoorArray(resid) { let ic = this.icn3d; ic.icn3dui;
@@ -25624,17 +31026,33 @@ var icn3d = (function (exports) {
         }
 
         downloadChainalignmentPart2(data1, data2Array, chainresiCalphaHash2, chainidArray) { let  ic = this.icn3d, me = ic.icn3dui;
-            //ic.interactionData_q = [];
-            //ic.mmdb_data_q = [];
+            let thisClass = this;
 
-            let  hAtoms = {};
-            hAtoms = ic.mmdbParserCls.parseMmdbData(data1, 'target', chainidArray[0], 0);
-
+            let  hAtoms = {}, hAtomsTmp = {};
+            let mmdbid_t, mmdbid_q;
+            mmdbid_t = chainidArray[0].substr(0, chainidArray[0].indexOf('_'));
             let  bLastQuery = false;
+            if(mmdbid_t.length > 4) { 
+                let bAppend = false, bNoDssp = true;
+                hAtoms = ic.pdbParserCls.loadPdbData(data1, mmdbid_t, false, bAppend, 'target', bLastQuery, bNoDssp);
+            }
+            else {
+                let bNoSeqalign = true;
+                hAtoms = ic.mmdbParserCls.parseMmdbData(data1, 'target', chainidArray[0], 0, bLastQuery, bNoSeqalign);
+            }
+
             for(let i = 0, il = data2Array.length; i < il; ++i) {
                 if(i == data2Array.length - 1) bLastQuery = true;
                 // each alignment has a chainIndex i
-                let  hAtomsTmp = ic.mmdbParserCls.parseMmdbData(data2Array[i], 'query', chainidArray[i + 1], i, bLastQuery);
+                mmdbid_q = chainidArray[i + 1].substr(0, chainidArray[i + 1].indexOf('_'));
+                if(mmdbid_q.length > 4) {
+                    let bAppend = true, bNoDssp = true;
+                    hAtomsTmp = ic.pdbParserCls.loadPdbData(data2Array[i], mmdbid_q, false, bAppend, 'query', bLastQuery, bNoDssp);
+                }
+                else {
+                    let bNoSeqalign = true;
+                    hAtomsTmp = ic.mmdbParserCls.parseMmdbData(data2Array[i], 'query', chainidArray[i + 1], i, bLastQuery, bNoSeqalign);
+                }
                 hAtoms = me.hashUtilsCls.unionHash(hAtoms, hAtomsTmp);
             }
 
@@ -25645,8 +31063,347 @@ var icn3d = (function (exports) {
                 ic.realignParserCls.realignChainOnSeqAlign(chainresiCalphaHash2, chainidArray, undefined, true);
             }
             else {
-                this.downloadChainalignmentPart3(chainresiCalphaHash2, chainidArray, hAtoms);
+                // calculate secondary structures with applyCommandDssp
+                $.when(ic.pdbParserCls.applyCommandDssp(true)).then(function() {
+                    // align PDB chains
+                    for(let index in ic.pdbChainIndexHash) {
+                        let idArray = ic.pdbChainIndexHash[index].split('_');
+                        mmdbid_q = idArray[0];
+                        idArray[1];
+                        mmdbid_t = idArray[2];
+                        idArray[3];
+
+                        thisClass.transformStructure(mmdbid_q, index-1, 'query');                
+                    }
+
+                    // dynamicly align pairs in ic.afChainIndexHash
+                    let  ajaxArray = [], indexArray = [], struArray = [];
+                    let urlalign = me.htmlCls.baseUrl + "vastdyn/vastdyn.cgi";
+
+                    for(let index in ic.afChainIndexHash) {
+                        let idArray = ic.afChainIndexHash[index].split('_');
+                        mmdbid_q = idArray[0];
+                        let chain_q = idArray[1];
+                        mmdbid_t = idArray[2];
+                        let chain_t = idArray[3];
+
+                        let jsonStr_q = ic.domain3dCls.getDomainJsonForAlign(ic.chains[mmdbid_q + '_' + chain_q]);
+
+                        let jsonStr_t = ic.domain3dCls.getDomainJsonForAlign(ic.chains[mmdbid_t + '_' + chain_t]);
+                            
+                        let alignAjax = $.ajax({
+                            url: urlalign,
+                            type: 'POST',
+                            data: {'domains1': jsonStr_q, 'domains2': jsonStr_t},
+                            dataType: 'jsonp',
+                            cache: true
+                        });
+
+                        ajaxArray.push(alignAjax);
+                        indexArray.push(index - 1);
+                        struArray.push(mmdbid_q);
+                    }
+
+                    //https://stackoverflow.com/questions/14352139/multiple-ajax-calls-from-array-and-handle-callback-when-completed
+                    //https://stackoverflow.com/questions/5518181/jquery-deferreds-when-and-the-fail-callback-arguments
+                    $.when.apply(undefined, ajaxArray).then(function() {
+                        let  dataArray =(indexArray.length == 1) ? [arguments] : Array.from(arguments);
+
+                        thisClass.downloadChainalignmentPart2b(chainresiCalphaHash2, chainidArray, hAtoms, dataArray, indexArray, mmdbid_t, struArray);
+                    })
+                    .fail(function() {
+                        alert("These structures can NOT be aligned to each other...");
+                    });    
+                });
             }
+        }
+
+        downloadChainalignmentPart2b(chainresiCalphaHash2, chainidArray, hAtoms, dataArray, indexArray, mmdbid_t, struArray) { let  ic = this.icn3d, me = ic.icn3dui;
+            //let bTargetTransformed = (ic.qt_start_end[0]) ? true : false;
+
+            // modify the previous trans and rotation matrix
+            for(let i = 0, il = dataArray.length; i < il; ++i) {
+                let align = dataArray[i][0];
+
+                let mmdbid_q = struArray[i];
+                let index = indexArray[i];
+
+                let bEqualMmdbid = (mmdbid_q == mmdbid_t);
+                let bEqualChain = false;
+
+                let queryData = {}; // check whether undefined
+
+                this.processAlign(align, index, queryData, bEqualMmdbid, bEqualChain);
+            }
+           
+            // do not transform the target
+            //if(!bTargetTransformed) {
+            //    this.transformStructure(mmdbid_t, indexArray[0], 'target');
+            //}
+
+            // transform the rest
+            for(let i = 0, il = dataArray.length; i < il; ++i) {
+                let mmdbid_q = struArray[i];
+                let index = indexArray[i];
+
+                this.transformStructure(mmdbid_q, index, 'query');
+            }
+
+    /*
+            // transform the target 
+            this.transformStructure(mmdbid_t, 0, 'target');
+
+            // transform the queries
+            for(let i = 1, il = chainidArray.length; i < il; ++i) {
+                let mmdbid_q = chainidArray[i].substr(0, chainidArray[i].indexOf('_'));
+
+                this.transformStructure(mmdbid_q, i - 1, 'query');
+            }
+    */
+
+            let hAtomsAll = {};
+            // set up the view of sequence alignment
+    /*       
+            for(let i = 1, il = chainidArray.length; i < il; ++i) {
+                if(ic.bFullUi && ic.q_rotation !== undefined && !me.cfg.resnum && !me.cfg.resdef) {
+                    hAtomsTmp = ic.setSeqAlignCls.setSeqAlignChain(chainidArray[i], i-1);
+
+                    hAtomsAll = me.hashUtilsCls.unionHash(hAtomsAll, hAtomsTmp);
+
+                    let  bReverse = false;
+                    let  seqObj = me.htmlCls.alignSeqCls.getAlignSequencesAnnotations(Object.keys(ic.alnChains), undefined, undefined, false, undefined, bReverse);
+                    let  oriHtml = $("#" + ic.pre + "dl_sequence2").html();
+
+                    $("#" + ic.pre + "dl_sequence2").html(oriHtml + seqObj.sequencesHtml);
+                    $("#" + ic.pre + "dl_sequence2").width(me.htmlCls.RESIDUE_WIDTH * seqObj.maxSeqCnt + 200);
+                }
+            }
+    */
+
+            if(ic.bFullUi && ic.q_rotation !== undefined && !me.cfg.resnum && !me.cfg.resdef) {
+                // set multiple seqeunce alignment from ic.qt_start_end
+                hAtomsAll = this.setMsa(chainidArray);
+            }
+
+            // highlight all aligned atoms
+            //ic.hAtoms = me.hashUtilsCls.cloneHash(hAtomsTmp);
+            ic.hAtoms = me.hashUtilsCls.cloneHash(hAtomsAll);
+
+            ic.transformCls.zoominSelection();
+
+            // do the rest
+            this.downloadChainalignmentPart3(chainresiCalphaHash2, chainidArray, ic.hAtoms);
+        }
+
+        setMsa(chainidArray, bRealign) { let  ic = this.icn3d, me = ic.icn3dui;
+            // get aligned length for each pair
+            let index_alignLen = [];
+            for(let index = 1, indexl = chainidArray.length; index < indexl; ++index) {
+                let alignLen = 0;
+                if(ic.qt_start_end && ic.qt_start_end[index - 1]) {
+                    for(let i = 0, il = ic.qt_start_end[index - 1].length; i < il; ++i) { 
+                        alignLen += ic.qt_start_end[index - 1][i].q_end - ic.qt_start_end[index - 1][i].q_start + 1;
+                    }
+                }
+                index_alignLen.push({index: index, alignLen: alignLen});
+            }
+            index_alignLen.sort(function(a,b){
+                return b.alignLen - a.alignLen;
+            });
+
+            let hAtomsAll = ic.setSeqAlignCls.setSeqAlignChainForAll(chainidArray, index_alignLen, bRealign);
+
+            let  bReverse = false;
+            let  seqObj = me.htmlCls.alignSeqCls.getAlignSequencesAnnotations(Object.keys(ic.alnChains), undefined, undefined, false, undefined, bReverse);
+            let  oriHtml = $("#" + ic.pre + "dl_sequence2").html();
+
+            $("#" + ic.pre + "dl_sequence2").html(oriHtml + seqObj.sequencesHtml);
+            $("#" + ic.pre + "dl_sequence2").width(me.htmlCls.RESIDUE_WIDTH * seqObj.maxSeqCnt + 200);
+
+            me.htmlCls.dialogCls.openDlg('dl_alignment', 'Select residues in aligned sequences');
+
+            return hAtomsAll;
+        }
+
+        downloadChainalignmentPart2bRealign(dataArray, chainidPairArray) { let  ic = this.icn3d, me = ic.icn3dui;
+            // set trans and rotation matrix
+            ic.t_trans_add = [];
+            ic.q_trans_sub = [];
+            ic.q_rotation = [];
+            ic.qt_start_end = [];
+
+            let mmdbid2cnt = {}, mmdbidpairHash = {};
+                 
+            let bFoundAlignment = false;
+            for(let i = 0, il = dataArray.length; i < il; ++i) {
+                let align = dataArray[i][0];
+
+                let bEqualMmdbid = false;
+                let bEqualChain = false;
+
+                let queryData = {}; // check whether undefined
+
+                let chainpair = chainidPairArray[i].split(',');
+                let mmdbid1 = chainpair[0].substr(0, chainpair[0].indexOf('_'));
+                let mmdbid2 = chainpair[1].substr(0, chainpair[1].indexOf('_'));
+                if(mmdbidpairHash.hasOwnProperty(mmdbid1 + '_' + mmdbid2)) { // aligned already
+                    continue;
+                }
+
+                let bNoAlert = true;
+                let bAligned = this.processAlign(align, i, queryData, bEqualMmdbid, bEqualChain, bNoAlert);
+
+                if(bAligned) {
+                    bFoundAlignment = true;
+
+                    mmdbid2cnt[mmdbid1] = (mmdbid2cnt[mmdbid1] === undefined) ? 1 : ++mmdbid2cnt[mmdbid1];
+                    mmdbid2cnt[mmdbid2] = (mmdbid2cnt[mmdbid2] === undefined) ? 1 : ++mmdbid2cnt[mmdbid2];
+
+                    mmdbidpairHash[mmdbid1 + '_' + mmdbid2] = chainpair + ',' + i;
+                }
+            }
+
+            if(!bFoundAlignment) {
+                if(ic.deferredRealignByStruct !== undefined) ic.deferredRealignByStruct.resolve();
+                alert("These structures can NOT be aligned...");
+                return;
+            }
+
+            // find the max aligned mmdbid as mmdbid_t
+            let cnt = 0, mmdbid_t;
+            for(let mmdbidpair in mmdbidpairHash) {
+                let mmdbidArray = mmdbidpair.split('_');
+                if(mmdbid2cnt[mmdbidArray[0]] > cnt) {
+                    cnt = mmdbid2cnt[mmdbidArray[0]];
+                    mmdbid_t = mmdbidArray[0];
+                }
+                if(mmdbid2cnt[mmdbidArray[1]] > cnt) {
+                    cnt = mmdbid2cnt[mmdbidArray[1]];
+                    mmdbid_t = mmdbidArray[1];
+                }
+            }
+
+            let aligType;
+            // transform all pairs 
+            let allChainidHash = {}, hAtoms = {}, alignMMdbids = {}, mmdbidpairFinalHash = {};
+            for(let mmdbidpair in mmdbidpairHash) {
+                let mmdbidArray = mmdbidpair.split('_');
+                let chainidArray = mmdbidpairHash[mmdbidpair].split(',');
+                let index = chainidArray[2];
+
+                let target, query;
+                if(mmdbid_t == mmdbidArray[0]) {
+                    target = mmdbidArray[0];
+                    query = mmdbidArray[1];
+                } 
+                else if(mmdbid_t == mmdbidArray[1]) {
+                    target = mmdbidArray[1];
+                    query = mmdbidArray[0];               
+                }
+                else {
+                    target = mmdbidArray[0];
+                    query = mmdbidArray[1];               
+                }
+
+                // If all chains align to the same target, just check the query.
+                // If there are different targets, also just check the query. The taget should not appear again in the query.
+                alignMMdbids[target] = 1;
+                  
+                if(alignMMdbids.hasOwnProperty(query)) continue;
+                alignMMdbids[query] = 1;
+
+                mmdbidpairFinalHash[mmdbidpair] = mmdbidpairHash[mmdbidpair];
+
+                // chainid1 is target
+                aligType = 'target';
+                this.transformStructure(target, index, aligType);
+
+                aligType = 'query';
+                this.transformStructure(query, index, aligType);
+
+                allChainidHash[chainidArray[0]] = 1;
+                allChainidHash[chainidArray[1]] = 1;
+
+                //hAtoms = me.hashUtilsCls.unionHash(hAtoms, ic.chains[chainidArray[0]]);
+                //hAtoms = me.hashUtilsCls.unionHash(hAtoms, ic.chains[chainidArray[1]]);
+            }
+
+            // set up the view of sequence alignment for each pair
+            for(let mmdbidpair in mmdbidpairFinalHash) {           
+                if(ic.q_rotation !== undefined) {
+                    let chainidArrayTmp = mmdbidpairFinalHash[mmdbidpair].split(','); // chainid_chainid_index
+                    // switch these two chains
+                    let chainidArray = [chainidArrayTmp[1], chainidArrayTmp[0], chainidArrayTmp[2]];
+
+                    let hAtomsTmp = ic.setSeqAlignCls.setSeqAlignChain(undefined, undefined, chainidArray);
+                    hAtoms = me.hashUtilsCls.unionHash(hAtoms, hAtomsTmp);
+
+                    let  bReverse = false;
+                    let  seqObj = me.htmlCls.alignSeqCls.getAlignSequencesAnnotations(Object.keys(ic.alnChains), undefined, undefined, false, undefined, bReverse);
+                    let  oriHtml = $("#" + ic.pre + "dl_sequence2").html();
+
+                    $("#" + ic.pre + "dl_sequence2").html(oriHtml + seqObj.sequencesHtml);
+                    $("#" + ic.pre + "dl_sequence2").width(me.htmlCls.RESIDUE_WIDTH * seqObj.maxSeqCnt + 200);
+                }
+            }
+
+            //this.downloadChainalignmentPart3(undefined, Object.keys(allChainidHash), hAtoms);
+
+            ic.dAtoms = me.hashUtilsCls.cloneHash(hAtoms);
+            ic.hAtoms = me.hashUtilsCls.cloneHash(hAtoms);
+
+            let name = 'protein_aligned';
+            ic.selectionCls.saveSelection(name, name);
+
+            ic.opts['color'] = 'identity';
+            //ic.setColorCls.setColorByOptions(ic.opts, ic.atoms);
+            ic.setColorCls.setColorByOptions(ic.opts, ic.hAtoms);
+
+            me.htmlCls.dialogCls.openDlg('dl_alignment', 'Select residues in aligned sequences');
+
+            ic.drawCls.draw();
+            ic.hlUpdateCls.updateHlAll();
+
+            if(ic.deferredRealignByStruct !== undefined) ic.deferredRealignByStruct.resolve();
+        }
+
+        transformStructure(mmdbid, index, alignType) { let  ic = this.icn3d, me = ic.icn3dui;
+            let chainidArray = ic.structures[mmdbid];
+
+            for(let i = 0, il = chainidArray.length; i < il; ++i) {
+                for(let serial in ic.chains[chainidArray[i]]) {
+                    let atm = ic.atoms[serial];
+                    //atm.coord = new THREE.Vector3(atm.coord[0], atm.coord[1], atm.coord[2]);
+                    if(ic.q_rotation !== undefined && ic.t_trans_add.length > 0 && !me.cfg.resnum && !me.cfg.resdef) {
+                        atm = this.transformAtom(atm, index, alignType);
+                    }
+                }
+            }
+
+
+        }
+
+        transformAtom(atm, index, alignType) { let ic = this.icn3d; ic.icn3dui;
+            if(alignType === 'target') ;
+            else if(alignType === 'query') {
+                atm.coord.x -= ic.q_trans_sub[index].x;
+                atm.coord.y -= ic.q_trans_sub[index].y;
+                atm.coord.z -= ic.q_trans_sub[index].z;
+
+                let  x = atm.coord.x * ic.q_rotation[index].x1 + atm.coord.y * ic.q_rotation[index].y1 + atm.coord.z * ic.q_rotation[index].z1;
+                let  y = atm.coord.x * ic.q_rotation[index].x2 + atm.coord.y * ic.q_rotation[index].y2 + atm.coord.z * ic.q_rotation[index].z2;
+                let  z = atm.coord.x * ic.q_rotation[index].x3 + atm.coord.y * ic.q_rotation[index].y3 + atm.coord.z * ic.q_rotation[index].z3;
+
+                x -= ic.t_trans_add[index].x;
+                y -= ic.t_trans_add[index].y;
+                z -= ic.t_trans_add[index].z;
+
+                atm.coord.x = x;
+                atm.coord.y = y;
+                atm.coord.z = z;
+            }
+
+            return atm;
         }
 
         downloadChainalignmentPart3(chainresiCalphaHash2, chainidArray, hAtoms) { let  ic = this.icn3d, me = ic.icn3dui;
@@ -25667,12 +31424,15 @@ var icn3d = (function (exports) {
             // memebrane is determined by one structure. But transform both structures
             if(chainresiCalphaHash2 !== undefined) ic.ParserUtilsCls.transformToOpmOriForAlign(ic.selectedPdbid, chainresiCalphaHash2, true);
 
-            ic.dAtoms = hAtoms;
-            ic.hAtoms = hAtoms;
+            //ic.dAtoms = hAtoms;
+            //ic.hAtoms = hAtoms;
+            ic.hAtoms = me.hashUtilsCls.cloneHash(hAtoms);
+            ic.dAtoms = me.hashUtilsCls.cloneHash(hAtoms);
 
             ic.ParserUtilsCls.renderStructure();
 
-            if(ic.chainidArray.length > 2) {
+            //if(ic.chainidArray.length > 2) {
+            if(chainidArray.length > 2) {
                 let  residuesHash = {};
                 for(let i in hAtoms) {
                     let  atom = ic.atoms[i];
@@ -25694,10 +31454,9 @@ var icn3d = (function (exports) {
             ic.html2ddgm = '';
 
             // by default, open the seq alignment window
-            //if(me.cfg.show2d !== undefined && me.cfg.show2d) me.htmlCls.dialogCls.openDlg('dl_2ddgm', 'Interactions');
-            if(me.cfg.showalignseq) {
-                me.htmlCls.dialogCls.openDlg('dl_alignment', 'Select residues in aligned sequences');
-            }
+             //if(me.cfg.showalignseq) {
+    //            me.htmlCls.dialogCls.openDlg('dl_alignment', 'Select residues in aligned sequences');
+            //}
 
             if(me.cfg.show2d && ic.bFullUi) {
                 me.htmlCls.dialogCls.openDlg('dl_2ddgm', 'Interactions');
@@ -25721,6 +31480,8 @@ var icn3d = (function (exports) {
             ic.opts['proteins'] = 'c alpha trace';
 
             let  alignArray = chainalign.split(',');
+            let domainArray = (me.cfg.domainids) ? me.cfg.domainids.split(',') : [];
+            if(domainArray.length < alignArray.length) domainArray = [];
 
             for(let i = 0, il = alignArray.length; i < il; ++i) {
                 let  chainid = alignArray[i];
@@ -25733,15 +31494,30 @@ var icn3d = (function (exports) {
             let  pos1 = alignArray[0].indexOf('_');
             ic.mmdbid_t = alignArray[0].substr(0, pos1).toUpperCase();
             ic.chain_t = alignArray[0].substr(pos1+1);
-            let  url_t = me.htmlCls.baseUrl + "mmdb/mmdb_strview.cgi?v=2&program=icn3d&b=1&s=1&ft=1&bu=" + me.cfg.bu + "&uid=" + ic.mmdbid_t;
-            if(me.cfg.inpara !== undefined) url_t += me.cfg.inpara;
 
             let  ajaxArray = [];
-            let  targetAjax = $.ajax({
-              url: url_t,
-              dataType: 'jsonp',
-              cache: true
-            });
+            let  targetAjax;
+
+            let  url_t;
+            if(ic.mmdbid_t.length > 4) {
+                url_t = "https://alphafold.ebi.ac.uk/files/AF-" + ic.mmdbid_t + "-F1-model_v2.pdb";
+
+                targetAjax = $.ajax({
+                    url: url_t,
+                    dataType: 'text',
+                    cache: true
+                  });
+            }
+            else {
+                url_t = me.htmlCls.baseUrl + "mmdb/mmdb_strview.cgi?v=2&program=icn3d&b=1&s=1&ft=1&bu=" + me.cfg.bu + "&uid=" + ic.mmdbid_t;
+                if(me.cfg.inpara !== undefined) url_t += me.cfg.inpara;
+
+                targetAjax = $.ajax({
+                    url: url_t,
+                    dataType: 'jsonp',
+                    cache: true
+                  });
+            }
 
             ajaxArray.push(targetAjax);
 
@@ -25751,34 +31527,70 @@ var icn3d = (function (exports) {
             ic.pdbid_chain2title = {};
             if(ic.chainids2resids === undefined) ic.chainids2resids = {}; // ic.chainids2resids[chainid1][chainid2] = [resid, resid]
 
+            ic.afChainIndexHash = {};
+            ic.pdbChainIndexHash = {};
             for(let index = 1, indexLen = alignArray.length; index < indexLen; ++index) {
                 let  pos2 = alignArray[index].indexOf('_');
                 ic.mmdbid_q = alignArray[index].substr(0, pos2).toUpperCase();
                 ic.chain_q = alignArray[index].substr(pos2+1);
 
-                let  chainalignFinal = ic.mmdbid_q + "_" + ic.chain_q + "," + ic.mmdbid_t + "_" + ic.chain_t;
+                let  url_q, queryAjax;
+                if(ic.mmdbid_q.length > 4) {
+                    url_q = "https://alphafold.ebi.ac.uk/files/AF-" + ic.mmdbid_q + "-F1-model_v2.pdb";
 
-                let  urlalign = me.htmlCls.baseUrl + "vastdyn/vastdyn.cgi?chainpairs=" + chainalignFinal;
-                let  url_q = me.htmlCls.baseUrl + "mmdb/mmdb_strview.cgi?v=2&program=icn3d&b=1&s=1&ft=1&bu=" + me.cfg.bu + "&uid=" + ic.mmdbid_q;
+                    queryAjax = $.ajax({
+                        url: url_q,
+                        dataType: 'text',
+                        cache: true
+                    });
+                }
+                else {
+                    url_q = me.htmlCls.baseUrl + "mmdb/mmdb_strview.cgi?v=2&program=icn3d&b=1&s=1&ft=1&bu=" + me.cfg.bu + "&uid=" + ic.mmdbid_q;
+                    if(me.cfg.inpara !== undefined) url_q += me.cfg.inpara;
 
-                if(me.cfg.inpara !== undefined) url_q += me.cfg.inpara;
-
-                let  queryAjax = $.ajax({
-                  url: url_q,
-                  dataType: 'jsonp',
-                  cache: true
-                });
+                    queryAjax = $.ajax({
+                        url: url_q,
+                        dataType: 'jsonp',
+                        cache: true
+                    });
+                }
 
                 ajaxArray.push(queryAjax);
+            }
+            
+            for(let index = 1, indexLen = alignArray.length; index < indexLen; ++index) {
+                let  pos2 = alignArray[index].indexOf('_');
+                ic.mmdbid_q = alignArray[index].substr(0, pos2).toUpperCase();
+                ic.chain_q = alignArray[index].substr(pos2+1);
 
                 if(!me.cfg.resnum && !me.cfg.resdef) {
-                    let  alignAjax = $.ajax({
-                      url: urlalign,
-                      dataType: 'jsonp',
-                      cache: true
-                    });
+                    let  chainalignFinal = ic.mmdbid_q + "_" + ic.chain_q + "," + ic.mmdbid_t + "_" + ic.chain_t;
+                    let domainalign = (domainArray.length > 0) ? domainArray[index] + "," + domainArray[0] : undefined;
 
-                    ajaxArray.push(alignAjax);
+                    if(ic.mmdbid_t.length == 4 && ic.mmdbid_q.length == 4) {
+                        let  urlalign;
+                        
+                        if(domainArray.length > 0) {
+                            urlalign = me.htmlCls.baseUrl + "vastdyn/vastdyn.cgi?domainpairs=" + domainalign;
+                        }
+                        else {
+                            urlalign = me.htmlCls.baseUrl + "vastdyn/vastdyn.cgi?chainpairs=" + chainalignFinal;
+                        }
+                        
+                        let  alignAjax = $.ajax({
+                            url: urlalign,
+                            dataType: 'jsonp',
+                            cache: true
+                        });
+
+                        ajaxArray.push(alignAjax);
+
+                        ic.pdbChainIndexHash[index] = ic.mmdbid_q + "_" + ic.chain_q + "_" + ic.mmdbid_t + "_" + ic.chain_t;
+                    }
+                    else {
+                        // get the dynamic alignment after loading the structures
+                        ic.afChainIndexHash[index] = ic.mmdbid_q + "_" + ic.chain_q + "_" + ic.mmdbid_t + "_" + ic.chain_t;
+                    }
                 }
             }
 
@@ -25802,6 +31614,8 @@ var icn3d = (function (exports) {
             //var data2 = v2[0];
             // index = 0: the mmdb data of target
             let  targetData = dataArray[0][0];
+            let header = 'HEADER                                                        ' + mmdbid_t + '\n';
+            if(mmdbid_t.length > 4) targetData = header + targetData;
 
             ic.t_trans_add = [];
             ic.q_trans_sub = [];
@@ -25813,56 +31627,53 @@ var icn3d = (function (exports) {
 
             let  queryDataArray = [];
 
-            let  step =(me.cfg.resnum || me.cfg.resdef) ? 1 : 2;
-
-            for(let index = 1, indexl = dataArray.length; index < indexl; index += step) {
+            for(let index = 1, indexl = chainidArray.length; index < indexl; ++index) {
                 let  queryData = dataArray[index][0];
 
-                let  index2 = parseInt(index / step);
-                let  pos2 = chainidArray[index2].indexOf('_');
-                let  mmdbid_q = chainidArray[index2].substr(0, pos2).toUpperCase();
-                let  chain_q = chainidArray[index2].substr(pos2+1);
+                let  pos = chainidArray[index].indexOf('_');
+                let  mmdbid_q = chainidArray[index].substr(0, pos).toUpperCase();
 
-                if(me.cfg.resnum || me.cfg.resdef) {
-                    if(queryData !== undefined && JSON.stringify(queryData).indexOf('Oops there was a problem') === -1
-                      ) {
-                        ic.mmdbidArray.push(mmdbid_q);
+                let header = 'HEADER                                                        ' + mmdbid_q + '\n';
+                if(mmdbid_q.length > 4) queryData = header + queryData;
 
-                        queryDataArray.push(queryData);
-                    }
+                if(queryData !== undefined && JSON.stringify(queryData).indexOf('Oops there was a problem') === -1
+                    ) {
+                    ic.mmdbidArray.push(mmdbid_q);
+                    queryDataArray.push(queryData);
                 }
                 else {
-                    let  align = dataArray[index + 1][0];
-                    if(!align) {
-                        alert("These chains can not be aligned by VAST server. You can specify the residue range and try it again...");
-                        return;
+                    alert("The coordinate data can NOT be retrieved for the structure " + mmdbid_q + "...");
+                    return;
+                }
+            }
+
+            let missedChainCnt = 0;
+            //for(let index = chainidArray.length, indexl = dataArray.length; index < indexl; index += step) {
+            for(let index = 1, indexl = chainidArray.length; index < indexl; ++index) {
+                let  queryData = queryDataArray[index - 1]; 
+
+                let  pos = chainidArray[index].indexOf('_');
+                let  mmdbid_q = chainidArray[index].substr(0, pos).toUpperCase();
+                let  chain_q = chainidArray[index].substr(pos+1);
+
+                if(!me.cfg.resnum && !me.cfg.resdef) {
+                    let  index2 = chainidArray.length + index - 1;
+                    if(ic.afChainIndexHash.hasOwnProperty(index)) {
+                        ++missedChainCnt;
+
+                        // need to pass C-alpha coords and get transformation matrix from backend
+                        ic.t_trans_add[index-1] = {"x":0, "y":0, "z":0};
+                        ic.q_trans_sub[index-1] = {"x":0, "y":0, "z":0};
+                        ic.q_rotation[index-1] = {"x1":1, "y1":0, "z1":0, "x2":0, "y2":1, "z2":0, "x3":0, "y3":0, "z3":1};
+                        ic.qt_start_end[index-1] = undefined;
                     }
+                    else {
+                        let align = dataArray[index2 - missedChainCnt][0];
 
-                    if(queryData !== undefined && JSON.stringify(queryData).indexOf('Oops there was a problem') === -1
-                        && align !== undefined && JSON.stringify(align).indexOf('Oops there was a problem') === -1
-                      ) {
-                        if((align === undefined || align.length == 0) && mmdbid_q == mmdbid_t && chain_q == chain_t) {
-                            ic.t_trans_add.push({"x":0, "y":0, "z":0});
-                            ic.q_trans_sub.push({"x":0, "y":0, "z":0});
-                            ic.q_rotation.push({"x1":1, "y1":0, "z1":0, "x2":0, "y2":1, "z2":0, "x3":0, "y3":0, "z3":1});
-                            ic.qt_start_end.push(undefined);
-                        }
-                        else if(align === undefined || align.length == 0) {
-                            if(!me.cfg.command) alert('These two chains ' + chainidArray[index2] + ' can not align to each other. ' + 'Please select sequences from these two chains in the "Sequences & Annotations" window, ' + 'and click "Realign Selection" in the "File" menu to align your selection.');
+                        let bEqualMmdbid = (mmdbid_q == mmdbid_t);
+                        let bEqualChain = (chain_q == chain_t);
 
-                            me.cfg.showanno = 1;
-                            me.cfg.showalignseq = 0;
-                        }
-                        else {
-                            ic.t_trans_add.push(align[0].t_trans_add);
-                            ic.q_trans_sub.push(align[0].q_trans_sub);
-                            ic.q_rotation.push(align[0].q_rotation);
-                            ic.qt_start_end.push(align[0].segs);
-                        }
-
-                        ic.mmdbidArray.push(mmdbid_q);
-
-                        queryDataArray.push(queryData);
+                        this.processAlign(align, index-1, queryData, bEqualMmdbid, bEqualChain);
                     }
                 }
             }
@@ -25870,6 +31681,58 @@ var icn3d = (function (exports) {
             ic.mmdb_data_q = queryDataArray;
 
             this.loadOpmDataForChainalign(targetData, queryDataArray, chainidArray, ic.mmdbidArray);
+        }
+
+        processAlign(align, index, queryData, bEqualMmdbid, bEqualChain, bNoAlert) { let  ic = this.icn3d, me = ic.icn3dui;
+            let bAligned = false;
+            if((!align || align.length == 0) && !bNoAlert) {
+                alert("These chains can not be aligned by VAST server.");
+                return bAligned;
+            }
+
+            if(queryData !== undefined && JSON.stringify(queryData).indexOf('Oops there was a problem') === -1
+                && align !== undefined && JSON.stringify(align).indexOf('Oops there was a problem') === -1
+            ) {
+                if((align === undefined || align.length == 0) && bEqualMmdbid && bEqualChain) {
+                    ic.t_trans_add[index] = {"x":0, "y":0, "z":0};
+                    ic.q_trans_sub[index] = {"x":0, "y":0, "z":0};
+                    ic.q_rotation[index] = {"x1":1, "y1":0, "z1":0, "x2":0, "y2":1, "z2":0, "x3":0, "y3":0, "z3":1};
+                    ic.qt_start_end[index] = undefined;
+                }
+                else if(align === undefined || align.length == 0) {
+                    if(!me.cfg.command && !bNoAlert) alert('These two chains can not align to each other. ' + 'Please select sequences from these two chains in the "Sequences & Annotations" window, ' + 'and click "Realign Selection" in the "File" menu to align your selection.');
+
+                    ic.t_trans_add[index] = {"x":0, "y":0, "z":0};
+                    ic.q_trans_sub[index] = {"x":0, "y":0, "z":0};
+                    ic.q_rotation[index] = {"x1":1, "y1":0, "z1":0, "x2":0, "y2":1, "z2":0, "x3":0, "y3":0, "z3":1};
+                    ic.qt_start_end[index] = undefined;
+
+                    me.cfg.showanno = 1;
+                    me.cfg.showalignseq = 0;
+                }
+                else {
+                    /*
+                    ic.t_trans_add.push(align[0].t_trans_add);
+                    ic.q_trans_sub.push(align[0].q_trans_sub);
+                    ic.q_rotation.push(align[0].q_rotation);
+                    ic.qt_start_end.push(align[0].segs);
+                    */
+                    ic.t_trans_add[index] = align[0].t_trans_add;
+                    ic.q_trans_sub[index] = align[0].q_trans_sub;
+                    ic.q_rotation[index] = align[0].q_rotation;
+                    ic.qt_start_end[index] = align[0].segs;
+
+                    let  rmsd = align[0].super_rmsd;
+
+                    me.htmlCls.clickMenuCls.setLogCmd("RMSD of alignment: " + rmsd.toPrecision(4), false);
+                    $("#" + ic.pre + "realignrmsd").val(rmsd.toPrecision(4));
+                    if(!me.cfg.bSidebyside) me.htmlCls.dialogCls.openDlg('dl_rmsd', 'RMSD of alignment');
+
+                    bAligned = true;
+                }
+            }
+
+            return bAligned;
         }
 
         loadOpmDataForChainalign(data1, data2, chainidArray, mmdbidArray) { let  ic = this.icn3d, me = ic.icn3dui;
@@ -25889,7 +31752,7 @@ var icn3d = (function (exports) {
                   dataType: 'jsonp',
                   cache: true,
                   //tryCount : 0,
-                  //retryLimit : 1,
+                  //retryLimit : 0, //1
                   success: function(data) {
                     let  mmdbid = data.mmdbid;
                     ic.selectedPdbid = mmdbid;
@@ -25907,7 +31770,7 @@ var icn3d = (function (exports) {
                           dataType: 'text',
                           cache: true,
                           //tryCount : 0,
-                          //retryLimit : 1,
+                          //retryLimit : 0, //1
                           success: function(opmdata) {
                               ic.bOpm = true;
                               let  bVector = true;
@@ -25942,6 +31805,128 @@ var icn3d = (function (exports) {
                       return;
                   }
                 });
+            }
+        }
+
+        downloadMmdbAf(idlist, bQuery) { let  ic = this.icn3d, me = ic.icn3dui;
+          let  thisClass = this;
+
+          ic.deferredMmdbaf = $.Deferred(function() {
+            ic.structArray = idlist.split(',');
+
+            let  ajaxArray = [];
+
+            for(let i = 0, il = ic.structArray.length; i < il; ++i) {
+                let  url_t, targetAjax;
+                let structure = ic.structArray[i];
+
+                if(isNaN(structure) && structure.length > 4) {
+                    url_t = "https://alphafold.ebi.ac.uk/files/AF-" + ic.structArray[i] + "-F1-model_v2.pdb";
+
+                    targetAjax = $.ajax({
+                        url: url_t,
+                        dataType: 'text',
+                        cache: true
+                    });
+                }
+                else {
+                    url_t = me.htmlCls.baseUrl + "mmdb/mmdb_strview.cgi?v=2&program=icn3d&b=1&s=1&ft=1&bu=" + me.cfg.bu + "&uid=" + structure;
+                    if(me.cfg.inpara !== undefined) url_t += me.cfg.inpara;
+
+                    targetAjax = $.ajax({
+                        url: url_t,
+                        dataType: 'jsonp',
+                        cache: true
+                    });
+                }
+
+                ajaxArray.push(targetAjax);
+            }
+
+            ic.ParserUtilsCls.setYourNote(ic.structArray + ' in iCn3D');
+            ic.bCid = undefined;
+
+            ic.ParserUtilsCls.showLoading();
+
+            //https://stackoverflow.com/questions/14352139/multiple-ajax-calls-from-array-and-handle-callback-when-completed
+            //https://stackoverflow.com/questions/5518181/jquery-deferreds-when-and-the-fail-callback-arguments
+            $.when.apply(undefined, ajaxArray).then(function() {
+              let  dataArray =(ic.structArray.length == 1) ? [arguments] : Array.from(arguments);
+              thisClass.parseMMdbAfData(dataArray, ic.structArray, bQuery);
+              ic.ParserUtilsCls.hideLoading();
+            })
+            .fail(function() {
+                alert("There are some problems in retrieving the coordinates...");
+            });
+          });
+        
+          return ic.deferredMmdbaf.promise();
+        }
+
+        parseMMdbAfData(dataArray, structArray, bQuery) { let  ic = this.icn3d, me = ic.icn3dui;
+
+            let queryDataArray = [];
+            for(let index = 0, indexl = structArray.length; index < indexl; ++index) {
+                let  queryData = dataArray[index][0];
+                let header = 'HEADER                                                        ' + structArray[index] + '\n';
+                if(structArray[index].length > 4) queryData = header + queryData;
+
+                if(queryData !== undefined && JSON.stringify(queryData).indexOf('Oops there was a problem') === -1
+                    ) {
+                    queryDataArray.push(queryData);
+                }
+                else {
+                    alert("The coordinate data can NOT be retrieved for the structure " + structArray[index] + "...");
+                    return;
+                }
+            }
+
+            if(!ic.bCommandLoad && !bQuery) ic.init(); // remove all previously loaded data
+            
+            let  hAtoms = {}, hAtomsTmp = {};
+            let  bLastQuery = false;
+
+            for(let i = 0, il = structArray.length; i < il; ++i) {
+                if(i == structArray.length - 1) bLastQuery = true;
+
+                let targetOrQuery, bAppend;
+                if(i == 0 && !bQuery) {
+                    targetOrQuery = 'target';
+                    bAppend = false; 
+                }
+                else {
+                    targetOrQuery = 'query';
+                    bAppend = true; 
+                }
+
+                if(structArray[i].length > 4) {
+                    let bNoDssp = true;
+                    hAtomsTmp = ic.pdbParserCls.loadPdbData(queryDataArray[i], structArray[i], false, bAppend, targetOrQuery, bLastQuery, bNoDssp);
+                }
+                else {              
+                    let bNoSeqalign = true;
+                    hAtomsTmp = ic.mmdbParserCls.parseMmdbData(queryDataArray[i], targetOrQuery, undefined, undefined, bLastQuery, bNoSeqalign);
+                }
+                        
+                hAtoms = me.hashUtilsCls.unionHash(hAtoms, hAtomsTmp);
+            }
+
+            // calculate secondary structures with applyCommandDssp
+            if(bQuery && me.cfg.masterchain) {
+                $.when(ic.pdbParserCls.applyCommandDssp(true)).then(function() {
+                    let bRealign = true, bPredefined = true;
+                    ic.realignParserCls.realignChainOnSeqAlign(undefined, ic.chainidArray, bRealign, bPredefined);
+
+                    // reset annotations
+                    $("#" + ic.pre + "dl_annotations").html("");
+                    ic.bAnnoShown = false;
+                    if($('#' + ic.pre + 'dl_selectannotations').dialog( 'isOpen' )) {
+                        $('#' + ic.pre + 'dl_selectannotations').dialog( 'close' );
+                    }
+               });
+            }
+            else {
+                ic.pdbParserCls.applyCommandDssp(true);
             }
         }
     }
@@ -27163,7 +33148,7 @@ var icn3d = (function (exports) {
 
           ic.bRender = false;
           ic.bStopRotate = true;
-
+          
           // firebase dynamic links replace " " with "+". So convert it back
           dataStr =(bStatefile) ? dataStr.replace(/\+/g, ' ') : dataStr.replace(/\+/g, ' ').replace(/;/g, '\n');
 
@@ -27394,9 +33379,10 @@ var icn3d = (function (exports) {
                   let  strArray = ic.commands[i].split("|||");
 
                   if(Object.keys(ic.proteins).length > 0 && ic.mmdb_data === undefined &&(ic.bAjax3ddomain === undefined || !ic.bAjax3ddomain)) {
-                      $.when(thisClass.applyCommand3ddomain(strArray[0].trim())).then(function() {
-                          thisClass.execCommandsBase(i + 1, end, steps);
-                      });
+                      //$.when(thisClass.applyCommand3ddomain(strArray[0].trim())).then(function() {
+                        thisClass.applyCommand3ddomain(strArray[0].trim());    
+                        thisClass.execCommandsBase(i + 1, end, steps);
+                      //});
                   }
                   else {
                       if(Object.keys(ic.proteins).length > 0) {
@@ -27418,8 +33404,9 @@ var icn3d = (function (exports) {
                     &&(ic.bAjax3ddomain === undefined || !ic.bAjax3ddomain || ic.mmdb_data === undefined) ) {
                       $.when(thisClass.applyCommandClinvar(strArray[0].trim()))
                         .then(thisClass.applyCommandSnp(strArray[0].trim()))
-                        .then(thisClass.applyCommand3ddomain(strArray[0].trim()))
+                        //.then(thisClass.applyCommand3ddomain(strArray[0].trim()))
                         .then(function() {
+                          thisClass.applyCommand3ddomain(strArray[0].trim());
                           ic.annotationCls.setAnnoTabAll();
 
                           thisClass.execCommandsBase(i + 1, end, steps);
@@ -27438,8 +33425,9 @@ var icn3d = (function (exports) {
                   else if(Object.keys(ic.proteins).length > 0 &&(ic.bAjaxClinvar === undefined || !ic.bAjaxClinvar)
                     &&(ic.bAjax3ddomain === undefined || !ic.bAjax3ddomain || ic.mmdb_data === undefined)) {
                       $.when(thisClass.applyCommandClinvar(strArray[0].trim()))
-                        .then(thisClass.applyCommand3ddomain(strArray[0].trim()))
+                        //.then(thisClass.applyCommand3ddomain(strArray[0].trim()))
                         .then(function() {
+                          thisClass.applyCommand3ddomain(strArray[0].trim());
                           ic.annotationCls.setAnnoTabAll();
 
                           thisClass.execCommandsBase(i + 1, end, steps);
@@ -27447,10 +33435,11 @@ var icn3d = (function (exports) {
                   }
                   else if(Object.keys(ic.proteins).length > 0 &&(ic.bAjax3ddomain === undefined || !ic.bAjax3ddomain || ic.mmdb_data === undefined)
                     &&(ic.bAjaxSnp === undefined || !ic.bAjaxSnp)) {
-                      $.when(thisClass.applyCommand3ddomain(strArray[0].trim()))
-                        .then(thisClass.applyCommandSnp(strArray[0].trim()))
+                      //$.when(thisClass.applyCommand3ddomain(strArray[0].trim()))
+                      $.when(thisClass.applyCommandSnp(strArray[0].trim()))
                         .then(function() {
-                          ic.annotationCls.setAnnoTabAll();
+                            thisClass.applyCommand3ddomain(strArray[0].trim());
+                            ic.annotationCls.setAnnoTabAll();
 
                           thisClass.execCommandsBase(i + 1, end, steps);
                       });
@@ -27472,12 +33461,14 @@ var icn3d = (function (exports) {
                       });
                   }
                   else if(Object.keys(ic.proteins).length > 0 &&(ic.bAjax3ddomain === undefined || !ic.bAjax3ddomain || ic.mmdb_data === undefined) ) {
-                      $.when(thisClass.applyCommand3ddomain(strArray[0].trim()))
-                        .then(function() {
+                      //$.when(thisClass.applyCommand3ddomain(strArray[0].trim()))
+                      // .then(function() {
+                          thisClass.applyCommand3ddomain(strArray[0].trim());
+
                           ic.annotationCls.setAnnoTabAll();
 
                           thisClass.execCommandsBase(i + 1, end, steps);
-                      });
+                      //});
                   }
                   else {
                       if(Object.keys(ic.proteins).length > 0) {
@@ -27599,6 +33590,22 @@ var icn3d = (function (exports) {
                 }
 
                 $.when(thisClass.applyCommandRealign(command)).then(function() {
+                   thisClass.execCommandsBase(i + 1, end, steps);
+                });
+
+                return;
+              }
+              else if(ic.commands[i].trim().indexOf('realign on structure align') == 0) {
+                let  strArray = ic.commands[i].split("|||");
+                let  command = strArray[0].trim();
+
+                let  paraArray = command.split(' | ');
+                if(paraArray.length == 2) {
+                    let  nameArray = paraArray[1].split(',');
+                    ic.hAtoms = ic.definedSetsCls.getAtomsFromNameArray(nameArray);
+                }
+
+                $.when(thisClass.applyCommandRealignByStruct(command)).then(function() {
                    thisClass.execCommandsBase(i + 1, end, steps);
                 });
 
@@ -27744,12 +33751,13 @@ var icn3d = (function (exports) {
                             thisClass.applyCommand3ddomain(lastCommand);
                         }
                         else if(lastCommand.indexOf('set annotation all') == 0) {
-                            //$.when(thisClass.applyCommandAnnotationsAndCddSite(lastCommand))
-                            //    .then(thisClass.applyCommandSnpClinvar(lastCommand))
                             $.when(thisClass.applyCommandClinvar(lastCommand))
                                 .then(thisClass.applyCommandSnp(lastCommand))
-                                .then(thisClass.applyCommand3ddomain(lastCommand));
-                            ic.annotationCls.setAnnoTabAll();
+                                //.then(thisClass.applyCommand3ddomain(lastCommand));
+                                .then(function() {
+                                    thisClass.applyCommand3ddomain(lastCommand);
+                                    ic.annotationCls.setAnnoTabAll();
+                                });
                         }
                         else if(lastCommand.indexOf('view interactions') == 0 && me.cfg.align !== undefined) {
                             thisClass.applyCommandViewinteraction(lastCommand);
@@ -27782,6 +33790,14 @@ var icn3d = (function (exports) {
                                 ic.hAtoms = ic.definedSetsCls.getAtomsFromNameArray(nameArray);
                             }
                             thisClass.applyCommandRealign(lastCommand);
+                        }
+                        else if(lastCommand.indexOf('realign on structure align') == 0) {
+                            let  paraArray = lastCommand.split(' | ');
+                            if(paraArray.length == 2) {
+                                let  nameArray = paraArray[1].split(',');
+                                ic.hAtoms = ic.definedSetsCls.getAtomsFromNameArray(nameArray);
+                            }
+                            thisClass.applyCommandRealignByStruct(lastCommand);
                         }
                         else if(lastCommand.indexOf('graph interaction pairs') == 0) {
                             thisClass.applyCommandGraphinteraction(lastCommand);
@@ -27865,6 +33881,18 @@ var icn3d = (function (exports) {
                 me.cfg.bu = 0;
       
                 ic.mmdbParserCls.downloadMmdb(id);
+            }
+            else if(command.indexOf('load mmdbaf1') !== -1) {
+                me.cfg.mmdbafid = id;
+                me.cfg.bu = 1;
+      
+                ic.mmdbParserCls.downloadMmdbAf(id);
+            }
+            else if(command.indexOf('load mmdbaf0') !== -1) {
+                me.cfg.mmdbafid = id;
+                me.cfg.bu = 0;
+
+                ic.mmdbParserCls.downloadMmdbAf(id);
             }
             else if(command.indexOf('load gi') !== -1) {
               me.cfg.gi = id;
@@ -27993,6 +34021,21 @@ var icn3d = (function (exports) {
           }); // end of me.deferred = $.Deferred(function() {
 
           return ic.deferredRealign.promise();
+        }
+
+        applyCommandRealignByStructBase(command) { let ic = this.icn3d; ic.icn3dui;
+            ic.realignParserCls.realignOnStructAlign();
+        }
+
+        applyCommandRealignByStruct(command) { let ic = this.icn3d; ic.icn3dui;
+          let  thisClass = this;
+
+          // chain functions together
+          ic.deferredRealignByStruct = new $.Deferred(function() {
+             thisClass.applyCommandRealignByStructBase(command);
+          }); // end of me.deferred = $.Deferred(function() {
+
+          return ic.deferredRealignByStruct.promise();
         }
 
         applyCommandAfmapBase(command, bFull) { let ic = this.icn3d; ic.icn3dui;
@@ -28141,11 +34184,11 @@ var icn3d = (function (exports) {
           let  thisClass = this;
 
           // chain functions together
-          ic.deferred3ddomain = $.Deferred(function() {
+          //ic.deferred3ddomain = $.Deferred(function() {
               thisClass.applyCommand3ddomainBase(command);
-          }); // end of me.deferred = $.Deferred(function() {
+          //}); // end of me.deferred = $.Deferred(function() {
 
-          return ic.deferred3ddomain.promise();
+          //return ic.deferred3ddomain.promise();
         }
 
         applyCommandViewinteractionBase(command) { let  ic = this.icn3d, me = ic.icn3dui;
@@ -28264,7 +34307,7 @@ var icn3d = (function (exports) {
             if(me.deferred !== undefined) me.deferred.resolve(); if(ic.deferred2 !== undefined) ic.deferred2.resolve();
         }
 
-        replayFirstStep(currentNumber) { let ic = this.icn3d; ic.icn3dui;
+        replayFirstStep(currentNumber) { let  ic = this.icn3d, me = ic.icn3dui;
               // fresh start
               ic.reinitAfterLoad();
               //ic.selectionCls.resetAll();
@@ -28285,6 +34328,8 @@ var icn3d = (function (exports) {
 
               $("#" + ic.pre + "replay_cmd").html('Cmd: ' + cmdStr);
               $("#" + ic.pre + "replay_menu").html('Menu: ' + menuStr);
+
+              me.htmlCls.clickMenuCls.setLogCmd(cmdStrOri, true);
 
               ic.bCommandLoad = false;
 
@@ -28466,9 +34511,11 @@ var icn3d = (function (exports) {
         }
 
         closeDialogs() {var ic = this.icn3d, me = ic.icn3dui;
-            let  itemArray = ['dl_selectannotations', 'dl_alignment', 'dl_2ddgm', 'dl_definedsets', 'dl_graph',
-                'dl_linegraph', 'dl_scatterplot', 'dl_contactmap', 'dl_allinteraction', 'dl_copyurl',
-                'dl_symmetry', 'dl_symd'];
+            //let  itemArray = ['dl_selectannotations', 'dl_alignment', 'dl_2ddgm', 'dl_definedsets', 'dl_graph',
+            //    'dl_linegraph', 'dl_scatterplot', 'dl_contactmap', 'dl_allinteraction', 'dl_copyurl',
+            //    'dl_symmetry', 'dl_symd', 'dl_rmsd', 'dl_legend', 'dl_disttable'];
+            let itemArray = ['dl_2ddgm', 'dl_2dctn', 'dl_alignment', 'dl_sequence2', 'dl_definedsets', 'dl_setsmenu', 'dl_command', 'dl_setoperations', 'dl_vast', 'dl_foldseek', 'dl_mmtfid', 'dl_pdbid', 'dl_afid', 'dl_opmid', 'dl_pdbfile', 'dl_pdbfile_app', 'dl_rescolorfile', 'dl_customcolor', 'dl_align', 'dl_alignaf', 'dl_chainalign', 'dl_mutation', 'dl_mol2file', 'dl_sdffile', 'dl_xyzfile', 'dl_afmapfile', 'dl_urlfile', 'dl_mmciffile', 'dl_mmcifid', 'dl_mmdbid', 'dl_mmdbafid', 'dl_blast_rep_id', 'dl_yournote', 'dl_gi', 'dl_uniprotid', 'dl_cid', 'dl_pngimage', 'dl_state', 'dl_fixedversion', 'dl_selection', 'dl_dsn6', 'dl_dsn6url', 'dl_clr', 'dl_symmetry', 'dl_symd', 'dl_contact', 'dl_hbonds', 'dl_realign', 'dl_realignbystruct', 'dl_allinteraction', 'dl_interactionsorted', 'dl_linegraph', 'dl_linegraphcolor', 'dl_scatterplot', 'dl_scatterplotcolor', 'dl_contactmap', 'dl_alignerrormap', 'dl_elecmap2fofc', 'dl_elecmapfofc', 'dl_emmap', 'dl_aroundsphere', 'dl_adjustmem', 'dl_selectplane', 'dl_addlabel', 'dl_addlabelselection', 'dl_labelColor', 'dl_distance', 'dl_stabilizer', 'dl_disttwosets', 'dl_distmanysets', 'dl_stabilizer_rm', 'dl_thickness', 'dl_thickness2', 'dl_addtrack', 'dl_addtrack_tabs', 'dl_saveselection', 'dl_copyurl', 'dl_selectannotations', 'dl_annotations_tabs', 'dl_anno_view_tabs', 'dl_annotations', 'dl_graph', 'dl_svgcolor', 'dl_area', 'dl_colorbyarea', 'dl_rmsd', 'dl_buriedarea', 'dl_propbypercentout', 'dl_propbybfactor', 'dl_legend', 'dl_disttable'];
+
             for(let i in itemArray) {
                 let  item = itemArray[i];
                 if(!me.cfg.notebook) {
@@ -28484,6 +34531,1147 @@ var icn3d = (function (exports) {
         }
     }
 
+    /*
+     * @author Jiyao Wang <wangjiy@ncbi.nlm.nih.gov> / https://github.com/ncbi/icn3d
+     * Modified from Tom Madej's C++ code
+    */
+
+    //import * as THREE from 'three';
+
+    class Domain3d {
+        constructor(icn3d) {
+    		this.icn3d = icn3d;
+
+            this.dcut = 8; // threshold for C-alpha interactions
+
+    		this.MAX_SSE = 512;
+
+            //let this.ctc_cnt[this.MAX_SSE][this.MAX_SSE];		// contact count matrix
+            this.ctc_cnt = [];
+            for(let i = 0; i < this.MAX_SSE; ++i) {
+                this.ctc_cnt[i] = [];
+            }
+
+            //let this.elt_size[this.MAX_SSE];			// element sizes in residues
+            this.elt_size = [];
+            this.elt_size.length = this.MAX_SSE;
+
+            //let this.group_num[this.MAX_SSE];			// indicates required element groupings
+            this.group_num = [];
+            this.group_num.length = this.MAX_SSE;
+
+            this.split_ratio = 0.0;			//let // splitting ratio
+            this.min_size = 0;				// min required size of a domain
+            this.min_sse = 0;				// min number of SSEs required in a domain
+            this.max_csz = 0;				// max size of a cut, i.e. number of points
+            this.mean_cts = 0.0;				// mean number of contacts in a domain
+            this.c_delta = 0;				// cut set parameter
+            this.nc_fact = 0.0;				// size factor for internal contacts
+            //let this.elements[2*this.MAX_SSE];			// sets of this.elements to be split
+            this.elements = [];
+            this.elements.length = 2*this.MAX_SSE;
+
+            //let this.stack[this.MAX_SSE];			// this.stack of sets (subdomains) to split
+            this.stack = [];
+            this.stack.length = this.MAX_SSE;
+
+            this.top = 0;					// this.top of this.stack
+            //let this.curr_prt0[this.MAX_SSE];			// current part 0 this.elements
+            this.curr_prt0 = [];
+            this.curr_prt0.length = this.MAX_SSE;
+
+            //let this.curr_prt1[this.MAX_SSE];			// current part 1 this.elements
+            this.curr_prt1 = [];
+            this.curr_prt1.length = this.MAX_SSE;
+
+            this.curr_ne0 = 0;				// no. of this.elements in current part 0
+            this.curr_ne1 = 0;				// no. of this.elements in current part 1
+            this.curr_ratio = 0.0;			// current splitting ratio
+            this.curr_msize = 0;				// min of current part sizes
+            //let this.parts[2*this.MAX_SSE];			// final partition into domains
+            this.parts = [];
+            this.parts.length = 2*this.MAX_SSE;
+
+            this.np = 0;					// next free location in this.parts[]
+            this.n_doms = 0;				// number of domains
+            //let this.save_ratios[this.MAX_SSE];		// this.saved splitting ratios
+            this.save_ratios = [];
+            this.save_ratios.length = this.MAX_SSE;
+
+            this.saved = 0;				// number of this.saved ratios
+    	}
+
+    	// Partition the set of this.elements on this.top of the this.stack based on the input cut.
+    	// If the partition is valid and the ratio is smaller than the current one, then
+    	// save it as the best partition so far encountered.  Various criteria are
+    	// employed for valid partitions, as described below.
+    	//
+
+    	//update_partition(int* cut, let k, let n) { let ic = this.icn3d, me = ic.icn3dui;
+    	update_partition(cut, k, n) { let ic = this.icn3d; ic.icn3dui;
+    		let i, il, j, t, nc0, nc1, ncx, ne, ne0, ne1, elts = [], prt = []; //int
+    		let size0, size1, prt0 = [], prt1 = []; // int
+            prt0.length = this.MAX_SSE;
+            prt1.length = this.MAX_SSE;
+    		let f, r0; //let
+
+    		// this.elements from the this.top of the this.stack 
+    		//elts = &this.elements[this.stack[this.top - 1]];
+    		for(i = this.stack[this.top - 1], il = this.elements.length; i < il; ++i) {
+    			elts.push(this.elements[i]);
+    		}
+
+    		// generate the partition based on the cut //
+    		for (i = ne = ne0 = ne1 = 0, prt = prt0, t = -1; i < k; i++) {
+    			// write the this.elements into prt //
+    			for (j = t + 1; j <= cut[i]; j++)
+    				prt[ne++] = elts[j];
+
+    			t = cut[i];
+
+    			// switch the partition //
+    			if (prt == prt0) {
+    				ne0 = ne;
+    				prt = prt1;
+    				ne = ne1;
+    			}
+    			else {
+    				ne1 = ne;
+    				prt = prt0;
+    				ne = ne0;
+    			}
+    		}
+
+    		// finish with the last part //
+    		for (j = t + 1; j < n; j++)
+    			prt[ne++] = elts[j];
+
+    		if (prt == prt0)
+    			ne0 = ne;
+    		else
+    			ne1 = ne;
+
+    		// don't split into two teeny this.parts! //
+    		if ((ne0 < this.min_sse) && (ne1 < this.min_sse))
+    			return cut;
+
+    		// check to see if the partition splits any required groups //
+    		for (i = 0; i < ne0; i++) {
+    			t = this.group_num[prt0[i]];
+
+    			for (j = 0; j < ne1; j++) {
+    				if (t == this.group_num[prt1[j]])
+    					return cut;
+    			}
+    		}
+
+    		// compute the sizes of the this.parts //
+    		for (i = size0 = 0; i < ne0; i++)
+    			size0 += this.elt_size[prt0[i]];
+
+    		for (i = size1 = 0; i < ne1; i++)
+    			size1 += this.elt_size[prt1[i]];
+
+    		// count internal contacts for part 0 //
+    		for (i = nc0 = 0; i < ne0; i++) {
+    			for (j = i; j < ne0; j++)
+    				nc0 += this.ctc_cnt[prt0[i]][prt0[j]];
+    		}
+
+    		// count internal contacts for part 1 //
+    		for (i = nc1 = 0; i < ne1; i++) {
+    			for (j = i; j < ne1; j++)
+    				nc1 += this.ctc_cnt[prt1[i]][prt1[j]];
+    		}
+
+    		// check globularity condition //
+    		if ((1.0 * nc0 / size0 < this.mean_cts) ||
+    			(1.0 * nc1 / size1 < this.mean_cts))
+    			return cut;
+
+    		// to handle non-globular pieces make sure nc0, nc1, are large enough //
+    		nc0 = Math.max(nc0, this.nc_fact*size0);
+    		nc1 = Math.max(nc1, this.nc_fact*size1);
+
+    		// count inter-part contacts //
+    		for (i = ncx = 0; i < ne0; i++) {
+    			t = prt0[i];
+
+    			for (j = 0; j < ne1; j++)
+    				ncx += this.ctc_cnt[t][prt1[j]];
+    		}
+
+    		// compute the splitting ratio //
+    		f = Math.min(nc0, nc1);
+    		r0 = 1.0 * ncx / (f + 1.0);
+
+    		if ((r0 >= this.curr_ratio + 0.01) || (r0 > this.split_ratio))
+    			return cut;
+
+    		// If the difference in the ratios is insignificant then take the split
+    		// that most evenly partitions the domain.
+
+    		if ((r0 > this.curr_ratio - 0.01) && (Math.min(size0, size1) < this.curr_msize))
+    				return cut;
+
+    		// if we get to here then keep this split //
+    		for (i = 0; i < ne0; i++)
+    			this.curr_prt0[i] = prt0[i];
+
+    		for (i = 0; i < ne1; i++)
+    			this.curr_prt1[i] = prt1[i];
+
+    		this.curr_ne0 = ne0;
+    		this.curr_ne1 = ne1;
+    		this.curr_ratio = r0;
+    		this.curr_msize = Math.min(size0, size1);
+
+    		return cut;
+
+    	} // end update_partition //
+
+
+
+    	// // Run through the possible cuts of size k for a set of this.elements of size n.
+    	//  *
+    	//  * To avoid small protrusions, no blocks of consecutive this.elements of length <= this.c_delta
+    	//  * are allowed.  An example where this is desirable is as follows.  Let's say you
+    	//  * have a protein with 2 subdomains, one of them an alpha-beta-alpha sandwich.  It
+    	//  * could then happen that one of the helices in the sandwich domain might make more
+    	//  * contacts with the other subdomain than with the sandwich.  The correct thing to
+    	//  * do is to keep the helix with the rest of the sandwich, and the "this.c_delta rule"
+    	//  * enforces this.
+    	//  //
+
+    	cut_size(k, n) { let ic = this.icn3d; ic.icn3dui;
+    		let i, j, cok, cut0 = []; //int
+    		cut0.length = this.MAX_SSE;
+
+    		for (i = 0; i < k; i++)
+    			cut0[i] = i;
+
+    		// enumerate cuts of length k //
+    		while (1) {
+    			// check block sizes in the cut //
+    			for (i = cok = 1; i < k; i++) {
+    				if (cut0[i] - cut0[i - 1] <= this.c_delta) {
+    					cok = 0;
+    					break;
+    				}
+    			}
+    			if (cok && (cut0[k - 1] < n - 1))
+    				cut0 = this.update_partition(cut0, k, n);
+
+    			// generate the next k-tuple of positions //
+    			for (j = k - 1; (j >= 0) && (cut0[j] == n - k + j); j--);
+
+    			if (j < 0) break;
+
+    			cut0[j]++;
+
+    			for (i = j + 1; i < k; i++)
+    				cut0[i] = cut0[i - 1] + 1;
+    		}
+
+    	} // end cut_size //
+
+
+
+    	// // Process the set of this.elements on this.top of the this.stack.  We generate cut sets in
+    	//  * a limited size range, generally from 1 to 5.  For each cut the induced
+    	//  * partition is considered and its splitting parameters computed.  The cut
+    	//  * that yields the smallest splitting ratio is chosen as the correct one, if
+    	//  * the ratio is low enough.  The subdomains are then placed on the this.stack for
+    	//  * further consideration.
+    	//  *
+    	//  * Subdomains with < this.min_sse SSEs are not allowed to split further, however,
+    	//  * it is possible to trim fewer than this.min_sse SSEs from a larger domain.  E.g.
+    	//  * a chain with 7 SSEs can be split into a subdomain with 5 SSEs and another
+    	//  * with 2 SSEs, but the one with 2 SSEs cannot be split further.
+    	//  *
+    	//  * Note that the invariant is, that this.stack[top] always points to the next free
+    	//  * location in this.elements[].
+    	//  //
+
+    	process_set() { let ic = this.icn3d; ic.icn3dui;
+    		let i, il, k, n, t, k0, elts = []; //int
+
+    		// count the this.elements //
+    		//elts = &this.elements[this.stack[this.top - 1]];
+    		for(i = this.stack[this.top - 1], il = this.elements.length; i < il; ++i) {
+    			elts.push(this.elements[i]);
+    		}
+
+    		//for (n = 0; *elts > -1; n++, elts++);
+    		for (n = 0; n < elts.length && elts[n] > -1; n++);
+
+    		// try various cut sizes //
+    		k0 = Math.min(n - 1, this.max_csz);
+    		this.curr_ne0 = this.curr_ne1 = 0;
+    		this.curr_ratio = 100.0;
+
+    		for (k = 1; k <= k0; k++)
+    			this.cut_size(k, n);
+
+    		// pop this.stack //
+    		this.top--;
+
+    		if (this.curr_ne0 == 0) {
+    			// no split took place, save part //
+    			t = this.stack[this.top];
+
+    			//for (elts = &this.elements[t]; *elts > -1; elts++)
+    			//	parts[np++] = *elts;
+
+    			for (i = t; i < this.elements.length && this.elements[i] > -1; i++)
+    				this.parts[this.np++] = this.elements[i];
+
+    			this.parts[this.np++] = -1;
+    			this.n_doms++;
+    		}
+    		else {
+    			this.save_ratios[this.saved++] = this.curr_ratio;
+
+    			if (this.curr_ne0 > this.min_sse) {
+    				// push on part 0 //
+    				t = this.stack[this.top];
+
+    				for (i = 0; i < this.curr_ne0; i++)
+    					this.elements[t++] = this.curr_prt0[i];
+
+    				this.elements[t++] = -1;
+    				this.stack[++this.top] = t;
+    			}
+    			else {
+    				// save part 0 //
+    				for (i = 0; i < this.curr_ne0; i++)
+    					this.parts[this.np++] = this.curr_prt0[i];
+
+    				this.parts[this.np++] = -1;
+    				this.n_doms++;
+    			}
+
+    			if (this.curr_ne1 > this.min_sse) {
+    				// push on part 1 //
+    				t = this.stack[this.top];
+
+    				for (i = 0; i < this.curr_ne1; i++)
+    					this.elements[t++] = this.curr_prt1[i];
+
+    				this.elements[t++] = -1;
+    				this.stack[++this.top] = t;
+    			}
+    			else {
+    				// save part 1 //
+    				for (i = 0; i < this.curr_ne1; i++)
+    					this.parts[this.np++] = this.curr_prt1[i];
+
+    				this.parts[this.np++] = -1;
+    				this.n_doms++;
+    			}
+    		}
+    	} // end process_set //
+
+
+
+    	// Main driver for chain splitting. //
+    	//process_all(let n) { let ic = this.icn3d, me = ic.icn3dui;
+    	process_all(n) { let ic = this.icn3d; ic.icn3dui;
+    		let i; //int
+
+    		// initialize the this.stack //
+    		this.top = 1;
+    		this.stack[0] = this.np = this.n_doms = 0;
+    		this.saved = 0;
+
+    		for (i = 0; i < n; i++)
+    			this.elements[i] = i;
+
+    		this.elements[n] = -1;
+
+    		// recursively split the chain into domains //
+    		while (this.top > 0) {
+    			this.process_set();
+    		}
+    	} // end process_all //
+
+    	// Output the domains.  For S we number the this.elements 1, 2, ..., n. //
+    	//output(let n, int* prts) { let ic = this.icn3d, me = ic.icn3dui;
+    	output(n) { let ic = this.icn3d; ic.icn3dui;
+    		let i, k; //int
+    		
+    		let prts = [];
+
+    		// zap the output array //
+    		for (i = 0; i < 2*n; i++)
+    			prts.push(0);
+
+    		// now write out the subdomains //
+    		for (i = k = 0; k < this.n_doms; i++) {
+    			prts[i] = this.parts[i] + 1;
+
+    			if (this.parts[i] < 0)
+    				k++;
+    		}
+
+    		return prts;
+    	} // end output //
+
+
+
+    	// // S-interface to the chain-splitting program.
+    	//  *
+    	//  * Explanation of parameters:
+    	//  *
+    	//  *	ne - number of secondary structure this.elements (SSEs)
+    	//  *	cts - contact count matrix
+    	//  *	elt_sz - sizes of SSEs
+    	//  *	grps - element group indicators
+    	//  *	sratio - splitting ratio
+    	//  *	msize - min size of a split domain
+    	//  *	m_sse - min number of SSEs required in a split part
+    	//  *	mcsz - max cut size, i.e. max number of split points
+    	//  *	avg_cts - mean number of internal contacts for a domain
+    	//  *	c_delt - cut set parameter
+    	//  *	ncf0 - size factor for number of internal contacts
+    	//  *	prts - output listing of domains
+    	//  *	n_saved - number of this.saved splitting ratios
+    	//  *	ratios - splitting ratios
+    	//  *	ret - success/failure indicator
+    	//  *	verb - flag to turn off/on splitting information
+    	//  //
+
+    	//new_split_chain(let ne, let sratio, let msize, let m_sse, let mcsz, let avg_cts,
+    	//	let c_delt, let ncf0, int* prts, int* n_saved, let* ratios) { let ic = this.icn3d, me = ic.icn3dui;
+    	new_split_chain(ne, sratio, msize, m_sse, mcsz, avg_cts,
+    		c_delt, ncf0, prts, n_saved, ratios) { let ic = this.icn3d; ic.icn3dui;
+    		let i; //int
+
+    		this.split_ratio = sratio;
+    		this.min_size = msize;
+    		this.min_sse = m_sse;
+    		this.max_csz = mcsz;
+    		this.mean_cts = avg_cts;
+    		this.c_delta = c_delt;
+    		this.nc_fact = ncf0;
+    		
+    		this.process_all(ne);
+    		//this.output(ne, prts);
+    		this.parts = this.output(ne);
+    		n_saved = this.saved;
+    		for (i = 0; i < this.saved; i++)
+    			ratios[i] = this.save_ratios[i];
+
+    		return n_saved;
+
+    	} // end new_split_chain //
+
+    	//
+    	// Actually, here is a better method that is also simple!
+    	//
+    	// If there are N atoms (residues) this algorithm should usually run in
+    	// time O(N^4/3), and usually even much faster!  In very unusual cases
+    	// it could take quadratic time.  The key idea is that atoms are not
+    	// infinitely compressible, i.e. only a fixed number will fit in a given
+    	// region of space.  So if the protein is roughly spherical, there will
+    	// only be O(N^1/3) atoms close to any given diameter.  Therefore, a
+    	// bound on the number of iterations of the inner loop is O(N^1/3).
+    	//
+    	// For an elongated protein that happens to have the x-axis normal to
+    	// the long axis, then it is possible for the inner loop to take time
+    	// O(N), in which case the whole takes O(N^2).  But this should rarely,
+    	// if ever, occur in practice.  It would also be possible beforehand to
+    	// choose the axis with the largest variance.
+    	//
+
+    	// typedef struct res_struct {
+    	// 	let rnum;
+    	// 	let x, y, z;
+    	// } ResRec;
+
+    	//list< pair< pair< int, let >, let > >
+    	//c2b_AlphaContacts(let n0, let* x0, let* y0, let* z0,
+    	//	const let incr = 4, const let dcut = 8.0) { let ic = this.icn3d, me = ic.icn3dui;
+    	c2b_AlphaContacts(n0, x0, y0, z0, dcut) { let ic = this.icn3d; ic.icn3dui;
+    		//if(!incr) incr = 4;
+    		if(!dcut) dcut = this.dcut;
+
+    		let list_cts = [], list_rr = [];
+
+    		for (let i = 0; i < n0; i++) {
+    			// don't include residues with missing coordinates
+    			//if ((x0[i] == MissingCoord) || (y0[i] == MissingCoord) || (z0[i] == MissingCoord))
+    			if (!x0[i]|| !y0[i] || !z0[i])
+    				continue;
+
+    			//ResRec rr0;
+    			let rr0 = {};
+    			rr0.rnum = i + 1;
+    			rr0.x = x0[i];
+    			rr0.y = y0[i];
+    			rr0.z = z0[i];
+    			list_rr.push(rr0);
+    		}
+    		
+    		list_rr.sort(function(rr1, rr2) {
+    				return rr1.x - rr2.x;
+    			});
+    					
+    		//let rrit1, rrit2, rrbeg;
+    		let i, j, len = list_rr.length;
+
+    		//for (rrit1 = list_rr.begin(); rrit1 != list_rr.end(); rrit1++) {
+    		for (i = 0; i < len; ++i) {	
+    			//ResRec rr1 = *rrit1;
+    			let rr1 = list_rr[i];
+    			let x1 = rr1.x;
+    			let y1 = rr1.y;
+    			let z1 = rr1.z;
+    			//rrbeg = rrit1;
+    			//rrbeg++;
+
+    			//for (rrit2 = rrbeg; rrit2 != list_rr.end(); rrit2++) {
+    			for (j = i + 1; j < len; ++j) {	
+    				//ResRec rr2 = *rrit2;
+    				let rr2 = list_rr[j];
+    				if ((rr1.rnum - rr2.rnum <= 3) && (rr2.rnum - rr1.rnum <= 3)) continue;
+    				let x2 = rr2.x;
+    				let y2 = rr2.y;
+    				let z2 = rr2.z;
+
+    				if (x2 > x1 + dcut)
+    					break;
+
+    				// x1 <= x2 <= x1 + dcut so compare
+    				let sum = (x1 - x2)*(x1 - x2);
+    				sum += (y1 - y2)*(y1 - y2);
+    				sum += (z1 - z2)*(z1 - z2);
+    				let d0 = Math.sqrt(sum);
+    				if (d0 > dcut) continue;
+    				//pair< pair< int, let >, let > lpair;
+    				//pair< int, let > rpair;
+    				let lpair = {}, rpair = {};
+
+    				if (rr1.rnum < rr2.rnum) {
+    					rpair.first = rr1.rnum;
+    					rpair.second = rr2.rnum;
+    				}
+    				else {
+    					rpair.first = rr2.rnum;
+    					rpair.second = rr1.rnum;
+    				}
+
+    				lpair.first = rpair;
+    				lpair.second = d0;
+    				list_cts.push(lpair);
+    			}
+    		}
+
+    		return list_cts;
+
+    	} // end c2b_AlphaContacts
+
+
+
+    	//
+    	// Creates a table, actually a graph, of the contacts between SSEs.
+    	//
+
+    	//static map< pair< int, let >, let >
+    	//c2b_ContactTable(vector<int>& v1, vector<int>& v2) { let ic = this.icn3d, me = ic.icn3dui;
+    	c2b_ContactTable(v1, v2) { let ic = this.icn3d; ic.icn3dui;
+    		let cmap = {};
+    		let n0 = v1.length; //unsigned int
+
+    		if (n0 != v2.length) {
+    			// problem!
+
+    			return cmap;
+    		}
+
+    		for (let i = 0; i < n0; i++) {
+    			let e1 = v1[i];
+    			let e2 = v2[i];
+    			//pair<int, int> epr;
+    			//let epr = {};
+    			//epr.first = e1;
+    			//epr.second = e2;
+    			let epr = e1 + '_' + e2;
+
+    			//if (cmap.count(epr) == 0) {
+    			if (!cmap[epr]) {	
+    				cmap[epr] = 1;
+    			}
+    			else
+    				cmap[epr]++;
+    		}
+
+    		return cmap;
+
+    	} // end c2b_ContactTable
+
+    	
+    	//https://www.geeksforgeeks.org/number-groups-formed-graph-friends/
+    	countUtil(ss1, sheetNeighbor, existing_groups) {
+    		this.visited[ss1] = true;
+    		if(!this.groupnum2sheet[existing_groups]) this.groupnum2sheet[existing_groups] = [];
+    		this.groupnum2sheet[existing_groups].push(parseInt(ss1));
+
+    		for(let ss2 in sheetNeighbor[ss1]) {
+    			if (!this.visited[ss2]) {
+    				this.countUtil(ss2, sheetNeighbor, existing_groups);  
+    			}
+    		}  
+    	}
+
+    	//
+    	// Residue ranges of the Vast domains, per protein chain.
+    	//
+
+    	//
+    	// Subdomain definition rules are as follows; let m0 = minSSE:
+    	//
+    	//     1. A subdomain with <= m0 SSEs cannot be split.
+    	//
+    	//     2. A subdomain cannot be split into two this.parts, both with < m0 SSEs.
+    	//
+    	//     3. However, a subdomain can be trimmed, i.e. split into two this.parts,
+    	//        one with < m0 SSEs.
+    	//
+    	//c2b_NewSplitChain(string asymId, let seqLen, let* x0, let* y0, let* z0) { let ic = this.icn3d, me = ic.icn3dui;
+    	// x0, y0, z0: array of x,y,z coordinates of C-alpha atoms
+    	//c2b_NewSplitChain(chnid, dcut) { let ic = this.icn3d, me = ic.icn3dui;
+    	c2b_NewSplitChain(atoms, dcut) { let ic = this.icn3d; ic.icn3dui;
+    		let x0 = [], y0 = [], z0 = [];
+
+    		//substruct: array of secondary structures, each of which has the keys: From (1-based), To (1-based), Sheet (0 or 1), also add these paras: x1, y1, z1, x2, y2, z2
+    		let substruct = [];
+    		// determine residue ranges for each subdomain
+    		let subdomains = [];
+
+    		// sheets: array of sheets, each of which has the key: sheet_num (beta sandwich has two sheets, e.g., 0 and 1), adj_strand1 (not used), adj_strand2
+    		let sheets = [];
+
+    		let residueHash = ic.firstAtomObjCls.getResiduesFromAtoms(atoms);
+    		let residueArray = Object.keys(residueHash);
+    		residueArray[0].substr(0, residueArray[0].lastIndexOf('_'));
+
+    		let substructItem = {};
+    		let resiOffset = 0;
+    		for(let i = 0; i < residueArray.length; ++i) {
+    			let resid = residueArray[i];
+
+                let resi = resid.substr(resid.lastIndexOf('_') + 1);
+    			if(i == 0) {
+    				resiOffset = resi - 1;
+
+    				for(let j = 0; j < resiOffset; ++j) {
+    					x0.push(undefined);
+    					y0.push(undefined);
+    					z0.push(undefined);					
+    				}
+    			}
+
+    			//let resid = chnid + "_" + resi;
+    			let atom = ic.firstAtomObjCls.getFirstCalphaAtomObj(ic.residues[resid]);
+
+    			if(atom) {
+    				x0.push(atom.coord.x);
+    				y0.push(atom.coord.y);
+    				z0.push(atom.coord.z);
+    			}
+    			else {
+    				x0.push(undefined);
+    				y0.push(undefined);
+    				z0.push(undefined);
+    			}
+
+    			if(!atom) continue;           
+
+    			if(atom.ssend) {
+    				substructItem.To = parseInt(resi);
+    				substructItem.x2 = atom.coord.x;
+    				substructItem.y2 = atom.coord.y;
+    				substructItem.z2 = atom.coord.z;
+
+    				substructItem.Sheet = (atom.ss == 'sheet') ? true : false;
+    				substruct.push(substructItem);
+    				substructItem = {};				
+    			}
+
+    			// a residue could be both start and end. check ssend first, then check ssbegin 
+    			if(atom.ssbegin) {
+    				substructItem.From = parseInt(resi);
+    				substructItem.x1 = atom.coord.x;
+    				substructItem.y1 = atom.coord.y;
+    				substructItem.z1 = atom.coord.z;
+    			}
+            }
+
+    		let nsse = substruct.length;
+
+    		if (nsse <= 3)
+    			// too small, can't split or trim
+    			return {subdomains: subdomains, substruct: substruct};
+
+    		if (nsse > this.MAX_SSE) {
+    			// we have a problem...
+
+    			return {subdomains: subdomains, substruct: substruct};
+    		}
+
+    		let seqLen = residueArray.length + resiOffset;
+
+    		// get a list of Calpha-Calpha contacts
+    		///list< pair< pair< int, let >, let > >
+    		let cts = this.c2b_AlphaContacts(seqLen, x0, y0, z0, dcut);
+
+    		//
+    		// Produce a "map" of the SSEs, i.e. vec_sse[i] = 0 means residue i + 1
+    		// is in a loop, and vec_sse[i] = k means residue i + 1 belongs to SSE
+    		// number k.
+    		//
+    		let vec_sse = []; //vector<int>
+
+    		for (let i = 0; i < seqLen; i++)
+    			vec_sse.push(0);
+    			
+    		let hasSheets = false;
+
+    		//substruct: array of secondary structures, each of which has the keys: From, To, Sheet (0, 1)
+    		for (let i = 0; i < substruct.length; i++) {
+    			//SSE_Rec sserec = substruct[i];
+    			let sserec = substruct[i];
+    			let From = sserec.From;
+    			let To = sserec.To;
+    			this.elt_size[i] = To - From + 1;
+
+    			// double-check indexing OK???
+    			for (let j = From; j <= To; j++)
+    				vec_sse[j - 1] = i + 1;
+
+    			//if (sserec.Sheet > 0)
+    			if (sserec.Sheet)
+    				hasSheets = true;
+    		}
+
+    		// produce the SSE contact lists
+    		let vec_cts1 = [], vec_cts2 = [], vec_cts1a = [], vec_cts2a = [];
+
+    		//for (ctsit = cts.begin(); ctsit != cts.end(); ctsit++) {
+    		for (let i = 0, il = cts.length; i < il; ++i) {
+    			//pair< pair< int, let >, let > epr = *ctsit;
+    			//pair< int, let > respair = epr.first;
+    			let epr = cts[i];
+    			let respair = epr.first;
+    			let sse1 = vec_sse[respair.first - 1];
+    			let sse2 = vec_sse[respair.second - 1];
+    			// could be 0 or null
+    			if ((sse1 <= 0) || (sse2 <= 0) || !sse1 || !sse2) continue;
+    			vec_cts1.push(sse1);
+    			vec_cts2.push(sse2);
+    			if (sse1 == sse2) continue;
+    			vec_cts1a.push(sse1);
+    			vec_cts2a.push(sse2);
+    		}
+
+    		// this symmetrizes the contact data
+    		for (let i = 0; i < vec_cts1a.length; i++) {
+    			vec_cts1.push(vec_cts2a[i]);
+    			vec_cts2.push(vec_cts1a[i]);
+    		}
+
+    		// add dummy contacts
+    		for (let i = 0; i < nsse; i++) {
+    			vec_cts1.push(i + 1);
+    			vec_cts2.push(i + 1);
+    		}
+    		
+    		// create contact counts from the contacts/interactions
+    		//map< pair< int, let >, let > ctable = this.c2b_ContactTable(vec_cts1, vec_cts2);
+    		let ctable = this.c2b_ContactTable(vec_cts1, vec_cts2);
+
+    		// neighbor list of each sheet
+    		let sheetNeighbor = {};
+    		for(let pair in ctable) {
+    			let ssPair = pair.split('_'); // 1-based
+    			let ss1 = parseInt(ssPair[0]);
+    			let ss2 = parseInt(ssPair[1]);
+
+    			// both are sheets
+    			if(substruct[ss1 - 1].Sheet && substruct[ss2 - 1].Sheet) {
+    				if(!sheetNeighbor[ss1]) sheetNeighbor[ss1] = {};
+    				if(!sheetNeighbor[ss2]) sheetNeighbor[ss2] = {};
+
+    				sheetNeighbor[ss1][ss2] = 1;
+    				sheetNeighbor[ss2][ss1] = 1;
+    			}
+    		}
+
+    		//https://www.geeksforgeeks.org/number-groups-formed-graph-friends/
+    		let existing_groups = 0;
+    		let sheet2sheetnum = {};
+    		this.groupnum2sheet = {};
+    		this.visited = {};
+    		for (let ss1 in sheetNeighbor) {
+    			this.visited[ss1] = false;
+    		}
+
+    		// get this.groupnum2sheet
+    		for (let ss1 in sheetNeighbor) {
+    			// If not in any group.
+    			if (this.visited[ss1] == false) {
+    				existing_groups++;
+    				 
+    				this.countUtil(ss1, sheetNeighbor, existing_groups);
+    			}
+    		}
+
+    		// get sheet2sheetnum
+    		// each neighboring sheet willbe represented by the sheet with the smallest sse 
+    		for(let groupnum in this.groupnum2sheet) {
+    			let ssArray = this.groupnum2sheet[groupnum].sort();
+    			for(let i = 0, il = ssArray.length; i < il; ++i) {
+    				sheet2sheetnum[ssArray[i]] = ssArray[0];
+    			}
+    		}
+
+    		for (let i = 0; i < nsse; i++) {
+    			if(substruct[i].Sheet) {				
+    				let sheetsItem = {};
+    				if(sheet2sheetnum[i+1]) {
+    					sheetsItem.sheet_num = sheet2sheetnum[i+1];
+    					sheetsItem.adj_strand2 = 1; 
+    					sheetsItem.sse = i + 1; 
+    				}
+    				else {
+    					sheetsItem.sheet_num = 0;
+    					sheetsItem.adj_strand2 = 0; 
+    					sheetsItem.sse = i + 1; 
+    				}
+
+    				sheets.push(sheetsItem);
+    			}
+    		}
+
+    		//
+    		// Correct for dummy contacts; they're present to ensure that the
+    		// table gives the right result in the possible case there is an
+    		// element with no contacts.
+    		//
+    		for (let i = 0; i < nsse; i++) {
+    			for (let j = 0; j < nsse; j++) {
+    				//pair<int, int> epr;
+    				//let epr = {};
+    				//epr.first = i + 1;
+    				//epr.second = j + 1;
+    				let epr = (i+1).toString() + '_' + (j+1).toString();
+
+    				//if (ctable.count(epr) == 0)
+    				if (!ctable[epr])
+    					this.ctc_cnt[i][j] = 0;
+    				else {
+    					let cnt = ctable[epr];
+    					if (i == j) cnt--; // subtract dummy contact
+    					this.ctc_cnt[i][j] = cnt;
+    					this.ctc_cnt[j][i] = cnt;
+    				}
+    			}
+    		}
+
+    		let minStrand = 6;
+
+    		if (hasSheets) {
+    			//sheets: array of sheets, each of which has the key: sheet_num (number of strands), adj_strand1, adj_strand2
+
+    			let cnt = 0;
+
+    			for (let i = 0; i < sheets.length; i++) {
+    				//BetaSheet_Rec bsrec = sheets[i];
+    				let bsrec = sheets[i];
+
+    				//if ((bsrec.sheet_num > 0) && (this.elt_size[i] >= minStrand) && (bsrec.adj_strand2 != 0))
+    				if ((bsrec.sheet_num > 0) && (this.elt_size[bsrec.sse - 1] >= minStrand) && (bsrec.adj_strand2 != 0))
+    					cnt++;
+    			}
+
+    			for (let i = 0; i < nsse; i++) {
+    				//this.group_num[i] = (cnt == 0) ? i + 1 : 0;
+    				this.group_num[i] = i + 1;
+    			}
+
+    			if (cnt> 0) {
+    				for (let i = 0; i < sheets.length; i++) {
+    					let bsrec = sheets[i];
+    					this.group_num[bsrec.sse - 1] = bsrec.sheet_num;
+    				}
+    			}
+    		}
+    		else {
+    			for (let i = 0; i < nsse; i++)
+    				this.group_num[i] = i + 1;
+    		}
+
+    		let sratio = 0.25;
+    		let minSize = 25;
+    		let maxCsz = 4;
+    		let avgCts = 0.0;
+    		let ncFact = 0.0;
+    		let cDelta = 3;
+    		let minSSE = 3;
+
+    		// call the domain splitter
+    		this.parts = [];
+    		this.parts.length = 2*this.MAX_SSE;
+    		let ratios = [];
+    		ratios.length = this.MAX_SSE;
+    		let n_saved = 0;
+
+    		for (let i = 0; i < nsse; i++) {
+    			this.parts[2*i] = this.parts[2*i + 1] = 0;
+    			ratios[i] = 0.0;
+    		}
+
+    		n_saved = this.new_split_chain(nsse, sratio, minSize, minSSE, maxCsz, avgCts, cDelta, ncFact, this.parts, n_saved, ratios);
+
+    		// save domain data
+    		//list< vector< let > > list_parts;
+    		let list_parts = [];
+
+    		if (n_saved > 0) {
+    			// splits occurred...
+    			let j = 0;
+    			
+    			for (let i = 0; i <= n_saved; i++) {
+    				//vector<int> sselst;
+    				let sselst = [];
+    				//sselst.clear();
+
+    				while (j < 2*nsse) {
+    					let sse0 = this.parts[j++];
+
+    					if (sse0 == 0) {
+    						list_parts.push(sselst);
+    						break;
+    					}
+    					else
+    						sselst.push(sse0);
+    				}
+    			}
+    		}
+    		
+    		list_parts.sort(function(v1, v2) {
+    				return v1[0] - v2[0];
+    			});
+
+    		//for (lplet = list_parts.begin(); lplet != list_parts.end(); lpint++) {
+    		for (let index = 0, indexl = list_parts.length; index < indexl; ++index) {
+    			//vector<int> prts = *lpint;
+    			let prts = list_parts[index];
+    			//vector<int> resflags;
+    			//resflags.clear();
+    			let resflags = [];
+
+    			// a domain must have at least 3 SSEs...
+    			if (prts.length <= 2) continue;
+
+    			for (let i = 0; i < seqLen; i++)
+    				resflags.push(0);
+
+    			for (let i = 0; i < prts.length; i++) {
+    				let k = prts[i] - 1;
+
+    				if ((k < 0) || (k >= substruct.length)) {
+    					return {subdomains: subdomains, substruct: substruct};
+    				}
+
+    				//SSE_Rec sserec = substruct[k];
+    				let sserec = substruct[k];
+    				let From = sserec.From;
+    				let To = sserec.To;
+
+    				for (let j = From; j <= To; j++)
+    					resflags[j - 1] = 1;
+
+    				if ((k == 0) && (From > 1)) {
+    					// residues with negative residue numbers will not be included
+    					for (let j = 1; j < From; j++) {
+    						//resflags[j - 1] = 1;
+    						// include at most 10 residues
+    						if(From - j <= 10) {
+    							resflags[j - 1] = 1;
+    						}
+    					}
+    				}
+
+    				if ((k == substruct.length - 1) && (To < seqLen)) {
+    					for (let j = To + 1; j <= seqLen; j++) {
+    						//resflags[j - 1] = 1;
+    						// include at most 10 residues
+    						if(j - To <= 10) {
+    							resflags[j - 1] = 1;
+    						}
+    					}
+    				}
+
+    				// left side
+    				if (k > 0) {
+    					//SSE_Rec sserec1 = substruct[k - 1];
+    					let sserec1 = substruct[k - 1];
+    					let To1 = sserec1.To;
+    					//let ll = (int) floor(0.5*((let) (From - To1 - 1)));
+    					let ll = parseInt(0.5 * (From - To1 - 1));
+
+    					if (ll > 0) {
+    						for (let j = From - ll; j <= From - 1; j++)
+    							resflags[j - 1] = 1;
+    					}
+    				}
+
+    				// right side
+    				if (k < substruct.length - 1) {
+    					//SSE_Rec sserec1 = substruct[k + 1];
+    					let sserec1 = substruct[k + 1];
+    					let From1 = sserec1.From;
+    					//let ll = (int) ceil(0.5*((let) (From1 - To - 1)));
+    					// let ft = From1 - To - 1;
+    					// let ll = parseInt(ft/2);
+    					// if (ft % 2 == 1) ll++;
+    					let ll = parseInt(0.5 * (From1 - To - 1) + 0.5);
+
+    					if (ll > 0) {
+    						for (let j = To + 1; j <= To + ll; j++)
+    							resflags[j - 1] = 1;
+    					}
+    				}
+    			}
+
+    			// extract the continguous segments
+    			let inseg = false;
+    			let startseg;
+    			//vector<int> segments;
+    			//segments.clear();
+    			let segments = [];
+
+    			for (let i = 0; i < seqLen; i++) {
+    				let rf = resflags[i];
+
+    				if (!inseg && (rf == 1)) {
+    					// new segment starts here
+    					startseg = i + 1;
+    					inseg = true;
+    					continue;
+    				}
+
+    				if (inseg && (rf == 0)) {
+    					// segment ends
+    					segments.push(startseg);
+    					segments.push(i);
+    					inseg = false;
+    				}
+    			}
+
+    			// check for the last segment
+    			if (inseg) {
+    				segments.push(startseg);
+    				segments.push(seqLen);
+    			}
+
+    			subdomains.push(segments);
+    		}
+
+    		return {subdomains: subdomains, substruct: substruct};
+    	} // end c2b_NewSplitChain
+
+    	getDomainJsonForAlign(atoms) { let ic = this.icn3d, me = ic.icn3dui;
+    		let result = this.c2b_NewSplitChain(atoms);
+
+    		let subdomains = result.subdomains;
+    		let substruct = result.substruct;
+
+    		let residueHash = ic.firstAtomObjCls.getResiduesFromAtoms(atoms);
+    		let residueArray = Object.keys(residueHash);
+    		let chnid = residueArray[0].substr(0, residueArray[0].lastIndexOf('_'));
+
+    		//the whole structure is also considered as a large domain
+    		//if(subdomains.length == 0) {
+    			//subdomains.push([parseInt(ic.chainsSeq[chnid][0].resi), parseInt(ic.chainsSeq[chnid][ic.chainsSeq[chnid].length - 1].resi)]);
+    			subdomains.push([parseInt(residueArray[0].substr(residueArray[0].lastIndexOf('_') + 1)), 
+    			 	parseInt(residueArray[residueArray.length-1].substr(residueArray[residueArray.length-1].lastIndexOf('_') + 1))]);
+    		//}
+
+    		// m_domains1: {"data": [ {"ss": [[1,20,30,x,y,z,x,y,z], [2,50,60,x,y,z,x,y,z]], "domain": [[1,43,x,y,z],[2,58,x,y,z], ...]}, {"ss": [[1,20,30,x,y,z,x,y,z], [2,50,60,x,y,z,x,y,z]],"domain": [[1,43,x,y,z],[2,58,x,y,z], ...]} ] }
+    		let jsonStr = '{"data": [';
+    		for(let i = 0, il = subdomains.length; i < il; ++i) {
+    			if(i > 0) jsonStr += ', ';
+    			//secondary structure
+    			jsonStr += '{"ss": [';
+    			let ssCnt = 0;
+    			for(let j = 0, jl = subdomains[i].length; j < jl; j += 2) {
+    				let start = subdomains[i][j];
+    				let end = subdomains[i][j + 1];
+    			
+    				for(let k = 0, kl = substruct.length; k < kl; ++k) {
+    					//ss: sstype	ss_start	ss_end	x1	y1	z1	x2	y2	z2
+    						//sstype: 1 (helix), 2 (sheet)
+    					let sstype = (substruct[k].Sheet) ? 2 : 1;
+    					let from = substruct[k].From;
+    					let to = substruct[k].To;
+
+    					let residFrom = chnid + "_" + from;
+    					let atomFrom = ic.firstAtomObjCls.getFirstCalphaAtomObj(ic.residues[residFrom]);
+    					if(!atomFrom || !ic.hAtoms.hasOwnProperty(atomFrom.serial)) continue;
+
+    					let residTo = chnid + "_" + to;
+    					let atomTo = ic.firstAtomObjCls.getFirstCalphaAtomObj(ic.residues[residTo]);
+    					if(!atomTo || !ic.hAtoms.hasOwnProperty(atomTo.serial)) continue;
+
+    					if(from >= start && to <= end) {
+    						if(ssCnt > 0) jsonStr += ', ';
+    						jsonStr += '[' + sstype + ',' + from + ',' + to + ',' + substruct[k].x1.toFixed(2) + ',' + substruct[k].y1.toFixed(2) + ',' 
+    							+ substruct[k].z1.toFixed(2) + ',' + substruct[k].x2.toFixed(2) + ',' + substruct[k].y2.toFixed(2) + ',' + substruct[k].z2.toFixed(2) + ']';
+    						++ssCnt;
+    					}
+    				}				
+    			}
+    			jsonStr += ']';
+
+    			// domain
+    			jsonStr += ', "domain": [';
+    			let domainCnt = 0;
+    			for(let j = 0, jl = subdomains[i].length; j < jl; j += 2) {
+    				let start = subdomains[i][j];
+    				let end = subdomains[i][j + 1];
+
+    				for(let k = 0, kl = residueArray.length; k < kl; ++k) {
+    					let resid = residueArray[k];
+
+    					let resi = resid.substr(resid.lastIndexOf('_') + 1);
+    		
+    					//let resid = chnid + "_" + resi;
+    					let atom = ic.firstAtomObjCls.getFirstCalphaAtomObj(ic.residues[resid]);
+
+    					if(!atom) continue;
+    					if(!ic.hAtoms.hasOwnProperty(atom.serial)) continue;
+
+    					//domain: resi, restype, x, y, z
+    					let restype = me.parasCls.resn2restype[atom.resn];
+    					if(restype !== undefined && resi >= start && resi <= end) {
+    						if(domainCnt > 0) jsonStr += ', ';
+    						jsonStr += '[' + resi + ',' + restype + ',' + atom.coord.x.toFixed(2) + ',' 
+    							+ atom.coord.y.toFixed(2) + ',' + atom.coord.z.toFixed(2) + ']';
+    						++domainCnt;
+    					}
+    				}			
+    			}
+    			jsonStr += ']}';
+    		}
+    		jsonStr += ']}';
+
+    		return jsonStr;
+    	} 
+    }
+
     /**
      * @author Jiyao Wang <wangjiy@ncbi.nlm.nih.gov> / https://github.com/ncbi/icn3d
      */
@@ -28497,7 +35685,7 @@ var icn3d = (function (exports) {
         showSeq(chnid, chnidBase, type, queryTitle, compTitle, queryText, compText) {  let ic = this.icn3d, me = ic.icn3dui;
             let bNonMmdb = false;
             let giSeq;
-            if(me.cfg.mmdbid === undefined && me.cfg.gi === undefined && me.cfg.blast_rep_id === undefined && me.cfg.align === undefined && me.cfg.chainalign === undefined) {
+            if(me.cfg.mmdbid === undefined && me.cfg.gi === undefined && me.cfg.blast_rep_id === undefined && me.cfg.align === undefined && me.cfg.chainalign === undefined && me.cfg.mmdbafid === undefined) {
                 bNonMmdb = true;
                 giSeq = [];
                 for(let i = 0; i < ic.giSeq[chnid].length; ++i) {
@@ -28538,7 +35726,7 @@ var icn3d = (function (exports) {
                 htmlTmp = '<div class="icn3d-residueLine" style="white-space:nowrap;">';
                 let atom = ic.firstAtomObjCls.getFirstCalphaAtomObj(ic.chains[chnid]);
                 //if(ic.baseResi[chnid] != 0 &&(me.cfg.mmdbid !== undefined || me.cfg.gi !== undefined || me.cfg.align !== undefined)) {
-                if((me.cfg.mmdbid !== undefined || me.cfg.gi !== undefined || me.cfg.blast_rep_id !== undefined || me.cfg.align !== undefined || me.cfg.chainalign !== undefined) && atom.resi_ori !== undefined && atom.resi_ori != atom.resi && chnid.indexOf('Misc') == -1 ) {
+                if((me.cfg.mmdbid !== undefined || me.cfg.gi !== undefined || me.cfg.blast_rep_id !== undefined || me.cfg.align !== undefined || me.cfg.chainalign !== undefined || me.cfg.mmdbafid !== undefined) && atom.resi_ori !== undefined && atom.resi_ori != atom.resi && chnid.indexOf('Misc') == -1 ) {
                     htmlTmp += '<div class="icn3d-annoTitle" anno="0" title="NCBI Residue Numbers">NCBI Residue Numbers</div>';
                 }
                 else {
@@ -28873,7 +36061,7 @@ var icn3d = (function (exports) {
             if(ic.giSeq[chnid].length > 10) {
                 let atom = ic.firstAtomObjCls.getFirstCalphaAtomObj(ic.chains[chnid]);
                 //if(ic.baseResi[chnid] != 0 &&(me.cfg.mmdbid !== undefined || me.cfg.gi !== undefined || me.cfg.align !== undefined)) {
-                if((me.cfg.mmdbid !== undefined || me.cfg.gi !== undefined || me.cfg.blast_rep_id !== undefined || me.cfg.align !== undefined || me.cfg.chainalign !== undefined) && atom.resi_ori !== undefined && atom.resi_ori != atom.resi && chnid.indexOf('Misc') == -1 ) {
+                if((me.cfg.mmdbid !== undefined || me.cfg.gi !== undefined || me.cfg.blast_rep_id !== undefined || me.cfg.align !== undefined || me.cfg.chainalign !== undefined || me.cfg.mmdbafid !== undefined) && atom.resi_ori !== undefined && atom.resi_ori != atom.resi && chnid.indexOf('Misc') == -1 ) {
                     htmlTmp = '<div class="icn3d-dl_sequence">';
                     htmlTmp += '<div class="icn3d-residueLine" style="white-space:nowrap;">';
                     htmlTmp += '<div class="icn3d-annoTitle" anno="0" title="PDB Residue Numbers">PDB Residue Numbers</div>';
@@ -28963,7 +36151,7 @@ var icn3d = (function (exports) {
                     }
                 }
             }
-            else if((me.cfg.align !== undefined || me.cfg.chainalign !== undefined || ic.bRealign || ic.bSymd) && ic.chainid2title !== undefined) {
+            else if((me.cfg.align !== undefined || me.cfg.chainalign !== undefined || me.cfg.mmdbafid !== undefined || ic.bRealign || ic.bSymd) && ic.chainid2title !== undefined) {
                 if(ic.chainid2title[chnid] !== undefined) {
                     fullProteinName = ic.chainid2title[chnid];
                 }
@@ -29006,7 +36194,7 @@ var icn3d = (function (exports) {
                   dataType: 'jsonp',
                   //dataType: 'json',
                   tryCount : 0,
-                  retryLimit : 1,
+                  retryLimit : 0, //1
                   success: function(data) {
                       thisClass.alignSequenceToStructure(chainid, data, title);
                   },
@@ -29043,7 +36231,7 @@ var icn3d = (function (exports) {
                   dataType: 'jsonp',
                   //dataType: 'json',
                   tryCount : 0,
-                  retryLimit : 1,
+                  retryLimit : 0, //1
                   success: function(data) {
                       thisClass.alignSequenceToStructure(chainid, data, title);
                   },
@@ -29947,7 +37135,9 @@ var icn3d = (function (exports) {
 
                     let legendHtml = me.htmlCls.clickMenuCls.setLegendHtml();
 
-                    $("#" + me.pre + "legend").html(legendHtml);
+                    //$("#" + me.pre + "legend").html(legendHtml);
+                    $("#" + me.pre + "dl_legend").html(legendHtml);
+                    me.htmlCls.dialogCls.openDlg('dl_legend', 'Color range');
                 }
                 else if(type == 'tube') {
                     ic.setOptionCls.setStyle('proteins', 'custom tube');
@@ -30075,6 +37265,76 @@ var icn3d = (function (exports) {
                ic.drawCls.draw();
            }
         }
+
+        measureDistManySets(nameArray, nameArray2) {var ic = this.icn3d, me = ic.icn3dui;
+            if(nameArray.length == 0 || nameArray2.length == 0) {
+                alert("Please select sets for distance calculation...");
+            }
+            else {
+
+                let prevHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+
+                let distHash = {};
+
+                for(let i = 0, il = nameArray.length; i < il; ++i) {
+                    let set1 = nameArray[i];
+                    let array1 = [set1];
+                    distHash[set1] = {};
+
+                    for(let j = 0, jl = nameArray2.length; j < jl; ++j) {
+                        let set2 = nameArray2[j];
+                        let array2 = [set2];
+
+                        if(set1 == set2) continue;
+
+                        let atomSet1 = ic.definedSetsCls.getAtomsFromNameArray(array1);
+                        let atomSet2 = ic.definedSetsCls.getAtomsFromNameArray(array2);
+
+                        let posArray1 = ic.contactCls.getExtent(atomSet1);
+                        let posArray2 = ic.contactCls.getExtent(atomSet2);
+            
+                        let pos1 = new THREE.Vector3(posArray1[2][0], posArray1[2][1], posArray1[2][2]);
+                        let pos2 = new THREE.Vector3(posArray2[2][0], posArray2[2][1], posArray2[2][2]);
+            
+                        let distance = pos1.distanceTo(pos2);
+
+                        distHash[set1][set2] = distance.toFixed(2);
+                    }
+                }
+
+                ic.hAtoms = me.hashUtilsCls.cloneHash(prevHAtoms);
+
+                let tableHtml = 'Note: Click on the distance to show a dashed line in 3D view.<br><br>';
+                tableHtml += '<table align=center border=1 cellpadding=10 cellspacing=0><tr><th></th>';
+                for(let j = 0, jl = nameArray2.length; j < jl; ++j) {
+                    let set2 = nameArray2[j];
+                    tableHtml += '<th><b>' + set2 + '</b> (&#8491;)</th>';
+                }
+                tableHtml += '</tr>';
+
+                for(let i = 0, il = nameArray.length; i < il; ++i) {
+                    let set1 = nameArray[i];
+                    tableHtml += '<tr><th><b>' + set1 + '</b> (&#8491;)</th>';
+
+                    for(let j = 0, jl = nameArray2.length; j < jl; ++j) {
+                        let set2 = nameArray2[j];
+
+                        if(distHash[set1] && distHash[set1][set2]) {
+                            tableHtml += '<td><span class="icn3d-distance" sets="' + set1 + '|' + set2 + '">' + distHash[set1][set2] + '</span></td>';
+                        }
+                        else {
+                            tableHtml += '<td>0</td>';
+                        }
+                    }
+
+                    tableHtml += '</tr>';
+                }
+
+                tableHtml += '</table><br><br>';
+
+                $("#" + me.pre + "dl_disttable").html(tableHtml);
+            }
+         }
 
         //Add a line between the position (x1, y1, z1) and the position (x2, y2, z2) with the input "color".
         //The line can be dashed if "dashed" is set true.
@@ -30225,9 +37485,9 @@ var icn3d = (function (exports) {
             let chnidArray = Object.keys(ic.protein_chainid);
             // show conserved domains and binding sites
             // live search
-    //        let url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&live=lcl&queries=" + chnidBaseArray;
+            let url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&frclive&live=lcl&queries=" + chnidBaseArray;
             // precalculated
-            let url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&queries=" + chnidBaseArray;
+            //let url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&live=lcl&queries=" + chnidBaseArray;
             // live search for AlphaFold structures
             //if(me.cfg.afid) {
 
@@ -30239,7 +37499,7 @@ var icn3d = (function (exports) {
                   dataType: 'jsonp',
                   cache: true,
                   tryCount : 0,
-                  retryLimit : 1,
+                  retryLimit : 0, //1
                   success: function(data) {
                     thisClass.parseCddData([data], chnidArray);
                     if(ic.deferredAnnoCddSite !== undefined) ic.deferredAnnoCddSite.resolve();
@@ -30270,7 +37530,10 @@ var icn3d = (function (exports) {
                    seq = seq.replace(/O/g, '');
 
                    //url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&live=lcl&queries=" + ic.giSeq[chnidArray[0]].join('');
-                   url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&live=lcl&queries=" + seq;
+                   // live searchE
+                   url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&frclive&live=lcl&queries=" + seq;
+                   // precalculated
+                   //url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&live=lcl&queries=" + seq;
 
                    let cdd = $.ajax({
                       url: url,
@@ -30805,6 +38068,8 @@ var icn3d = (function (exports) {
                   transformation.quaternion._y = parseFloat(ic.quaternion._y).toPrecision(5);
                   transformation.quaternion._z = parseFloat(ic.quaternion._z).toPrecision(5);
                   transformation.quaternion._w = parseFloat(ic.quaternion._w).toPrecision(5);
+
+                  /*
                   if(ic.bAddCommands) {
                       ic.commands.push('pickatom ' + atom.serial + '|||' + ic.transformCls.getTransformationStr(transformation));
                       ic.optsHistory.push(me.hashUtilsCls.cloneHash(ic.opts));
@@ -30816,6 +38081,9 @@ var icn3d = (function (exports) {
                   if( $( "#" + ic.pre + "logtext" ).length )  {
                     $("#" + ic.pre + "logtext").val("> " + ic.logs.join("\n> ") + "\n> ").scrollTop($("#" + ic.pre + "logtext")[0].scrollHeight);
                   }
+                  */
+                  me.htmlCls.clickMenuCls.setLogCmd('pickatom ' + atom.serial, true);
+
                   // update the interaction flag
                   ic.bSphereCalc = false;
                   //me.htmlCls.clickMenuCls.setLogCmd('set calculate sphere false', true);
@@ -31434,7 +38702,7 @@ var icn3d = (function (exports) {
             //ic.drawCls.draw();
           }
           else if(command == 'disulfide bonds') {
-            ic.annoSsbondCls.showSsbonds();
+            ic.showInterCls.showSsbonds();
           }
           else if(command == 'cross linkage') {
             ic.showInterCls.showClbonds();
@@ -31587,6 +38855,16 @@ var icn3d = (function (exports) {
             //ic.hlUpdateCls.updateHlAll();
           }
           else if(command.indexOf('set surface opacity') == 0) {
+            ic.transparentRenderOrder = false;
+
+            let  value = command.substr(command.lastIndexOf(' ') + 1);
+            ic.opts['opacity'] = parseFloat(value);
+            ic.applyMapCls.applySurfaceOptions();
+
+            if(parseInt(100*value) < 100) ic.bTransparentSurface = true;
+          }
+          else if(command.indexOf('set surface2 opacity') == 0) {
+            ic.transparentRenderOrder = true;
             let  value = command.substr(command.lastIndexOf(' ') + 1);
             ic.opts['opacity'] = parseFloat(value);
             ic.applyMapCls.applySurfaceOptions();
@@ -31855,7 +39133,7 @@ var icn3d = (function (exports) {
                 }
             }
           }
-          else if(commandOri.indexOf('dist') == 0) {
+          else if(commandOri.indexOf('dist ') == 0) {
             let  paraArray = commandOri.split(' | ');
             if(paraArray.length == 2) {
                 let  setNameArray = paraArray[1].split(' ');
@@ -31865,6 +39143,20 @@ var icn3d = (function (exports) {
                     let  nameArray2 = setNameArray[1].split(',');
 
                     ic.analysisCls.measureDistTwoSets(nameArray, nameArray2);
+                }
+            }
+          }
+          else if(commandOri.indexOf('disttable') == 0) {
+            let  paraArray = commandOri.split(' | ');
+            if(paraArray.length == 2) {
+                let  setNameArray = paraArray[1].split(' ');
+
+                if(setNameArray.length == 2) {
+                    let  nameArray = setNameArray[0].split(',');
+                    let  nameArray2 = setNameArray[1].split(',');
+
+                    ic.analysisCls.measureDistManySets(nameArray, nameArray2);
+                    me.htmlCls.dialogCls.openDlg('dl_disttable', 'Distance among the sets');
                 }
             }
           }
@@ -32090,6 +39382,24 @@ var icn3d = (function (exports) {
 
             ic.pickingCls.showPicking(ic.pAtom);
           }
+          else if(commandOri.indexOf('set color spectrum') == 0) {
+            let  paraArray = commandOri.split(' | ');
+            if(paraArray.length == 2) {
+                let  nameArray = paraArray[1].split(',');
+
+                let bSpectrum = true;
+                ic.setColorCls.setColorBySets(nameArray, bSpectrum);
+            }
+          }
+          else if(commandOri.indexOf('set color rainbow') == 0) {
+            let  paraArray = commandOri.split(' | ');
+            if(paraArray.length == 2) {
+                let  nameArray = paraArray[1].split(',');
+
+                let bSpectrum = false;
+                ic.setColorCls.setColorBySets(nameArray, bSpectrum);
+            }
+          }
           else if(commandOri.indexOf('color') == 0) {
             let  strArray = commandOri.split(" | ");
             let  color = strArray[0].substr(strArray[0].indexOf(' ') + 1);
@@ -32192,11 +39502,16 @@ var icn3d = (function (exports) {
                 ic.bGlycansCartoon = false;
             }
           }
+          else if(command.indexOf('save html') == 0) {
+            let  id = command.substr(command.lastIndexOf(' ') + 1);
+            me.htmlCls.eventsCls.saveHtml(id);
+          }
 
         // special, select ==========
 
           else if(command.indexOf('select displayed set') !== -1) {
-            ic.hAtoms = me.hashUtilsCls.cloneHash(ic.dAtoms);
+            //ic.hAtoms = me.hashUtilsCls.cloneHash(ic.dAtoms);
+            ic.hAtoms = me.hashUtilsCls.cloneHash(ic.viewSelectionAtoms);
             ic.hlUpdateCls.updateHlAll();
           }
           else if(command.indexOf('select prop') !== -1) {
@@ -32355,7 +39670,9 @@ var icn3d = (function (exports) {
                 ic.endColor = colorArray[3];
 
                 let  legendHtml = me.htmlCls.clickMenuCls.setLegendHtml();
-                $("#" + me.pre + "legend").html(legendHtml).show();
+                //$("#" + me.pre + "legend").html(legendHtml).show();
+                $("#" + me.pre + "dl_legend").html(legendHtml);
+                me.htmlCls.dialogCls.openDlg('dl_legend', 'Color Range');
             }
         }
 
@@ -33043,11 +40360,12 @@ var icn3d = (function (exports) {
 
         atoms2spec(atomHash) {var ic = this.icn3d; ic.icn3dui;
             let  spec = "";
-
             let  i = 0;
             let  structureHash = {}, chainHash = {}, resiHash = {};
+
+            let atom;
             for(let serial in atomHash) {
-                let  atom = ic.atoms[serial];
+                atom = ic.atoms[serial];
                 if(i > 0) {
                     spec += ' or ';
                 }
@@ -33611,30 +40929,63 @@ var icn3d = (function (exports) {
               seqalign = {};
         }
 
-        setSeqAlignChain(chainid, chainIndex) { let  ic = this.icn3d, me = ic.icn3dui;
+        setSeqAlignChain(chainid, chainIndex, chainidArray) { let  ic = this.icn3d, me = ic.icn3dui;
+            let hAtoms = {};
 
-              //var chainidArray = me.cfg.chainalign.split(',');
-              let  pos1 = ic.chainidArray[0].indexOf('_');
-              let  pos2 = chainid.indexOf('_');
+              let bRealign = (chainidArray) ? true : false;
+              let mmdbid1, mmdbid2, chain1, chain2, chainid1, chainid2, pos1, pos2;
 
-              let  mmdbid1 = ic.mmdbid_t; //ic.chainidArray[0].substr(0, pos1).toUpperCase();
-              let  mmdbid2 = chainid.substr(0, pos2).toUpperCase();
+              if(bRealign) { 
+                // originally chainid2 is target,chainid1 is query
+                // switch them so that chainid1 is the target
+                chainid1 = chainidArray[1];
+                chainid2 = chainidArray[0];
 
-              let  chain1 = ic.chainidArray[0].substr(pos1 + 1);
-              let  chain2 = chainid.substr(pos2 + 1);
+                chainIndex = chainidArray[2];
 
-              if(mmdbid1 == mmdbid2 && chain1 == chain2) {
-                let  chainLen = ic.chainsSeq[ic.mmdbid_q + '_' + ic.chain_q].length;
-                ic.qt_start_end[chainIndex] =  {"q_start":1, "q_end": chainLen, "t_start":1, "t_end": chainLen};
+                pos1 = chainid1.indexOf('_');
+                pos2 = chainid2.indexOf('_');
+
+                mmdbid1 = chainid1.substr(0, pos1).toUpperCase();
+                mmdbid2 = chainid2.substr(0, pos2).toUpperCase();
+
+                chain1 = chainid1.substr(pos1 + 1);
+                chain2 = chainid2.substr(pos1 + 1);
+
+                if(mmdbid1 == mmdbid2 && chain1 == chain2) {
+                    let  chainLen = ic.chainsSeq[mmdbid2 + '_' + chain2].length;
+                    ic.qt_start_end[chainIndex] =  {"q_start":1, "q_end": chainLen, "t_start":1, "t_end": chainLen};
+                }
+
+                if(mmdbid2 !== undefined && mmdbid2 === mmdbid1) {
+                    //chainid1 += me.htmlCls.postfix;
+                    chainid2 = mmdbid2 + me.htmlCls.postfix + "_" + chain2;
+                }
               }
+              else {
+                //var chainidArray = me.cfg.chainalign.split(',');
+                let  pos1 = chainidArray[0].indexOf('_');
+                let  pos2 = chainid.indexOf('_');
 
-              let  chainid1 = mmdbid1 + "_" + chain1;
-              let  chainid2 = mmdbid2 + "_" + chain2;
+                mmdbid1 = ic.mmdbid_t; //ic.chainidArray[0].substr(0, pos1).toUpperCase();
+                mmdbid2 = chainid.substr(0, pos2).toUpperCase();
 
-              if(mmdbid2 !== undefined && mmdbid2 === ic.mmdbid_t) {
-                  //chainid1 += me.htmlCls.postfix;
-                  chainid2 = mmdbid2 + me.htmlCls.postfix + "_" + chain2;
-              }
+                chain1 = chainidArray[0].substr(pos1 + 1);
+                chain2 = chainid.substr(pos2 + 1);
+
+                if(mmdbid1 == mmdbid2 && chain1 == chain2) {
+                    let  chainLen = ic.chainsSeq[ic.mmdbid_q + '_' + ic.chain_q].length;
+                    ic.qt_start_end[chainIndex] =  {"q_start":1, "q_end": chainLen, "t_start":1, "t_end": chainLen};
+                }
+
+                chainid1 = mmdbid1 + "_" + chain1;
+                chainid2 = mmdbid2 + "_" + chain2;
+
+                if(mmdbid2 !== undefined && mmdbid2 === ic.mmdbid_t) {
+                    //chainid1 += me.htmlCls.postfix;
+                    chainid2 = mmdbid2 + me.htmlCls.postfix + "_" + chain2;
+                }
+             }
 
               ic.conservedName1 = chainid1 + '_cons';
               ic.nonConservedName1 = chainid1 + '_ncons';
@@ -33656,6 +41007,10 @@ var icn3d = (function (exports) {
 
               ic.alnChainsSeq[chainid1] = [];
               ic.alnChains[chainid1] = {};
+
+              ic.alnChainsSeq[chainid2] = [];
+              ic.alnChains[chainid2] = {};
+              
               ic.alnChainsAnno[chainid1] = [];
               ic.alnChainsAnTtl[chainid1] = [];
 
@@ -33678,7 +41033,7 @@ var icn3d = (function (exports) {
               ic.alnChainsAnTtl[chainid1][6].push("");
 
               let  color, color2, classname;
-              let  prevIndex1, prevIndex2;
+              let  prevIndex1 = 0, prevIndex2 = 0;
 
               if(ic.qt_start_end[chainIndex] === undefined) return;
 
@@ -33691,10 +41046,19 @@ var icn3d = (function (exports) {
                   //var end1 = ic.qt_start_end[chainIndex][i].q_end - 1;
                   //var end2 = ic.qt_start_end[chainIndex][i].t_end - 1;
 
-                  let  start1 = ic.qt_start_end[chainIndex][i].t_start - 1;
-                  let  start2 = ic.qt_start_end[chainIndex][i].q_start - 1;
-                  let  end1 = ic.qt_start_end[chainIndex][i].t_end - 1;
-                  let  end2 = ic.qt_start_end[chainIndex][i].q_end - 1;
+                  let  start1, start2, end1, end2;
+                  if(bRealign) { // realresidue numbers are stored
+                    start1 = ic.qt_start_end[chainIndex][i].t_start;
+                    start2 = ic.qt_start_end[chainIndex][i].q_start;
+                    end1 = ic.qt_start_end[chainIndex][i].t_end;
+                    end2 = ic.qt_start_end[chainIndex][i].q_end;  
+                  }
+                  else {
+                    start1 = ic.qt_start_end[chainIndex][i].t_start - 1;
+                    start2 = ic.qt_start_end[chainIndex][i].q_start - 1;
+                    end1 = ic.qt_start_end[chainIndex][i].t_end - 1;
+                    end2 = ic.qt_start_end[chainIndex][i].q_end - 1;  
+                  }
 
                   if(i > 0) {
                       let  index1 = alignIndex;
@@ -33702,6 +41066,7 @@ var icn3d = (function (exports) {
                           if(ic.chainsSeq[chainid1] === undefined) break;
                           let  resi = ic.chainsSeq[chainid1][j].resi;
                           let  resn = ic.chainsSeq[chainid1][j].name.toLowerCase();
+
                           color = me.htmlCls.GREY8;
                           classname = 'icn3d-nalign';
 
@@ -33752,16 +41117,30 @@ var icn3d = (function (exports) {
                       }
                   }
 
-
                   for(let j = 0; j <= end1 - start1; ++j) {
                       if(ic.chainsSeq[chainid1] === undefined || ic.chainsSeq[chainid2] === undefined) break;
 
-                      if(ic.chainsSeq[chainid1][j + start1] === undefined || ic.chainsSeq[chainid2][j + start2] === undefined) continue;
+                      let  resi1, resi2, resn1, resn2;
+                      if(bRealign) {
+                        resi1 = j + start1;
+                        resi2 = j + start2;
 
-                      let  resi1 = ic.chainsSeq[chainid1][j + start1].resi;
-                      let  resi2 = ic.chainsSeq[chainid2][j + start2].resi;
-                      let  resn1 = ic.chainsSeq[chainid1][j + start1].name.toUpperCase();
-                      let  resn2 = ic.chainsSeq[chainid2][j + start2].name.toUpperCase();
+                        let resid1 = chainid1 + '_' + resi1;
+                        let resid2 = chainid2 + '_' + resi2;
+
+                        if(ic.residues[resid1] === undefined || ic.residues[resid2] === undefined) continue;
+
+                        resn1 = me.utilsCls.residueName2Abbr(ic.firstAtomObjCls.getFirstAtomObj(ic.residues[resid1]).resn.substr(0, 3));
+                        resn2 = me.utilsCls.residueName2Abbr(ic.firstAtomObjCls.getFirstAtomObj(ic.residues[resid2]).resn.substr(0, 3));
+                      }
+                      else {
+                        if(ic.chainsSeq[chainid1][j + start1] === undefined || ic.chainsSeq[chainid2][j + start2] === undefined) continue;
+
+                        resi1 = ic.chainsSeq[chainid1][j + start1].resi;
+                        resi2 = ic.chainsSeq[chainid2][j + start2].resi;
+                        resn1 = ic.chainsSeq[chainid1][j + start1].name.toUpperCase();
+                        resn2 = ic.chainsSeq[chainid2][j + start2].name.toUpperCase();
+                      }
 
                       if(resn1 === resn2) {
                           color = '#FF0000';
@@ -33777,6 +41156,9 @@ var icn3d = (function (exports) {
                           ic.nconsHash1[chainid1 + '_' + resi1] = 1;
                           ic.nconsHash2[chainid2 + '_' + resi2] = 1;
                       }
+
+                      hAtoms = me.hashUtilsCls.unionHash(hAtoms, ic.residues[chainid1 + '_' + resi1]);
+                      hAtoms = me.hashUtilsCls.unionHash(hAtoms, ic.residues[chainid2 + '_' + resi2]);
 
                       // mapping, use the firstsequence as the reference structure
                       ic.chainsMapping[chainid1][chainid1 + '_' + resi1] = resn1 + resi1;
@@ -33794,10 +41176,492 @@ var icn3d = (function (exports) {
                   prevIndex1 = end1;
                   prevIndex2 = end2;
               } // end for(let i
+
+              return hAtoms;
+        }
+
+        setSeqAlignChainForAll(chainidArray, index_alignLen, bRealign) { let  ic = this.icn3d, me = ic.icn3dui;
+            let hAtoms = {};
+
+            let chainid1 = chainidArray[0];
+
+            ic.alnChainsAnno[chainid1] = [];
+
+            // 1. assign ic.alnChainsAnTtl
+            ic.alnChainsAnTtl[chainid1] = [];
+
+            let n = chainidArray.length;
+
+            // Title
+            if(ic.alnChainsAnTtl[chainid1] === undefined ) ic.alnChainsAnTtl[chainid1] = [];
+            for(let i = 0; i < 3 + 2*n; ++i) {
+                if(ic.alnChainsAnTtl[chainid1][i] === undefined ) ic.alnChainsAnTtl[chainid1][i] = [];
+            }
+
+            for(let i = 0; i < n; ++i) {
+                ic.alnChainsAnTtl[chainid1][i].push(chainidArray[n-1 - i]);
+            }
+
+            // two annotations without titles
+            ic.alnChainsAnTtl[chainid1][n].push("");
+            ic.alnChainsAnTtl[chainid1][n + 1].push("");
+
+            for(let i = n + 2; i < 2*n + 2; ++i) {
+                ic.alnChainsAnTtl[chainid1][i].push(chainidArray[2*n + 1 - i]);
+            }
+
+            // empty line
+            ic.alnChainsAnTtl[chainid1][2*n + 2].push("");
+
+            // 2. assign ic.alnChainsSeq and ic.alnChains for all chains
+            ic.alnChainsSeq[chainid1] = [];
+
+            ic.alnChains = {};
+            ic.alnChains[chainid1] = {};      
+
+            let resi2range_t = {}; // aaccumulative aligned residues in the template chain
+            // start and end of MSA
+            let start_t = 9999, end_t = -1;
+            for(let index = 1, indexl = chainidArray.length; index < indexl; ++index) { 
+                let chainIndex = index - 1;
+                for(let i = 0, il = ic.qt_start_end[chainIndex].length; i < il; ++i) {
+                    let  start1, end1;
+                    if(bRealign) { // realresidue numbers are stored
+                        start1 = ic.qt_start_end[chainIndex][i].t_start;
+                        end1 = ic.qt_start_end[chainIndex][i].t_end;
+                    }
+                    else {
+                        start1 = ic.qt_start_end[chainIndex][i].t_start - 1;
+                        end1 = ic.qt_start_end[chainIndex][i].t_end - 1;
+                    }
+
+                    for(let j = start1; j <= end1; ++j) {
+                        let resi = this.getResi(chainidArray[0], j, bRealign);
+                        resi2range_t[resi] = 1;
+                        if(j < start_t) start_t = j;
+                        if(j > end_t) end_t = j;
+                    }
+                }
+            }
+
+            let resi2rangeArray = Object.keys(resi2range_t);
+            resi2rangeArray.sort(function(a, b) {
+                return parseInt(a) - parseInt(b);
+            });
+
+            // assign range to each resi
+            let prevResi = -999, start = 0, end = 0, resiArray = [], prevEnd = 0;
+            for(let i = 0, il = resi2rangeArray.length; i < il; ++i) {
+                let resi = resi2rangeArray[i];
+                
+                if(i == 0) {
+                    start = resi;
+                }
+                else if(i > 0 && parseInt(resi) != parseInt(prevResi) + 1 && parseInt(resi) != parseInt(prevResi)) { // new start
+                    end = prevResi;
+                    for(let j = 0, jl = resiArray.length; j < jl; ++j) {
+                        resi2range_t[resiArray[j]] = {resiStart: start, resiEnd: end, prevResiEnd: prevEnd};
+                    }
+
+                    resiArray = [];
+                    start = resi;
+                    prevEnd = end;
+                }
+
+                resiArray.push(resi);
+
+                prevResi = resi;
+            }
+
+            end = prevResi;
+            for(let j = 0, jl = resiArray.length; j < jl; ++j) {
+                resi2range_t[resiArray[j]] = {resiStart: start, resiEnd: end, prevResiEnd: prevEnd};
+            }
+
+            for(let i = 0, il = chainidArray.length; i < il; ++i) { 
+                let chainid = chainidArray[i];
+                ic.alnChainsSeq[chainid] = [];
+                ic.alnChains[chainid] = {}; 
+
+                ic.alnChainsAnno[chainid] = []; 
+            }
+
+            // fill the template ic.alnChainsSeq[chainid1]
+            for(let j = 0, jl = ic.chainsSeq[chainid1].length; j < jl; ++j) { 
+                let resi = ic.chainsSeq[chainid1][j].resi;
+
+                if((j < start_t || j > end_t) ) {
+                    continue;
+                }
+
+                let  resObject = {};
+                let  pos = chainid1.indexOf('_');
+                resObject.mmdbid = chainid1.substr(0, pos);
+                resObject.chain = chainid1.substr(pos+1);
+                resObject.resi = resi;
+                resObject.resn = (resi2range_t[resi]) ? ic.chainsSeq[chainid1][j].name.toUpperCase() : ic.chainsSeq[chainid1][j].name.toLowerCase();
+                resObject.aligned = (resi2range_t[resi]) ? true : false;
+                resObject.color = (resi2range_t[resi]) ? '#FF0000' : me.htmlCls.GREYC; // color by identity
+                resObject.color2 = (resi2range_t[resi]) ? '#FF0000' : me.htmlCls.GREYC; // color by conservation
+                resObject.class = (resi2range_t[resi]) ? 'icn3d-align' : 'icn3d-nalign';
+        
+                ic.alnChainsSeq[chainid1].push(resObject);
+
+                if(resi2range_t[resi]) {
+                    $.extend(ic.alnChains[chainid1], ic.residues[chainid1 + '_' + resObject.resi] );
+                    hAtoms = me.hashUtilsCls.unionHash(hAtoms, ic.residues[chainid1 + '_' + resObject.resi]);
+                }
+            }
+
+            // progressively merge sequences, starting from most similar to least similar
+            // assign ic.alnChainsSeq
+            let alignedChainIndice = [0];
+            for(let arrayIndex = 0, arrayIndexl = index_alignLen.length; arrayIndex < arrayIndexl; ++arrayIndex) { 
+                let index = index_alignLen[arrayIndex].index;
+                alignedChainIndice.push(index);
+                let hAtomsTmp = this.mergeTwoSeqForAll(chainidArray, index, alignedChainIndice, resi2range_t, start_t, end_t, bRealign);
+
+                hAtoms = me.hashUtilsCls.unionHash(hAtoms, hAtomsTmp);
+            }      
+        
+            // 3. assign the varaible ic.alnChainsAnno
+            for(let i = 0; i < 3 + 2*n; ++i) {
+                if(ic.alnChainsAnno[chainid1][i] === undefined ) ic.alnChainsAnno[chainid1][i] = [];
+            }
+
+            // secondary structures
+            for(let i = 0; i < n; ++i) {
+                let chainid = chainidArray[i];
+
+                for(let j = 0, jl = ic.alnChainsSeq[chainid].length; j < jl; ++j) {
+                    let resn = ic.alnChainsSeq[chainid][j].resn;
+                    if(resn == '-') {
+                        ic.alnChainsAnno[chainid1][n - 1 - i].push('-');  
+                    }
+                    else {
+                        let resi = ic.alnChainsSeq[chainid][j].resi;
+                        let  residueid = chainid + '_' + resi;
+                        let  ss = ic.secondaries[residueid];
+
+                        // push the annotations to the template chain
+                        if(ss !== undefined) {
+                            ic.alnChainsAnno[chainid1][n - 1 - i].push(ss);
+                        }
+                        else {
+                            ic.alnChainsAnno[chainid1][n - 1 - i].push('-');
+                        }
+                    }
+                }
+            }
+
+            // residue number 
+            for(let alignIndex = 0, alignIndexl = ic.alnChainsSeq[chainid1].length; alignIndex < alignIndexl; ++alignIndex) {
+                let  symbol = '.';
+                if(alignIndex % 5 === 0) symbol = '*';
+                if(alignIndex % 10 === 0) symbol = '|';
+                ic.alnChainsAnno[chainid1][n].push(symbol); // symbol: | for 10th, * for 5th, . for rest
+
+                let  numberStr = '';
+                if(alignIndex % 10 === 0) numberStr = alignIndex.toString();
+                ic.alnChainsAnno[chainid1][n + 1].push(numberStr); // symbol: 10, 20, etc, empty for rest
+            }
+
+            // title
+            for(let i = n + 2; i < 2*n + 2; ++i) { // reverse order
+                let  title = ic.pdbid_chain2title && ic.pdbid_chain2title.hasOwnProperty(chainidArray[2*n + 1 - i]) ? ic.pdbid_chain2title[chainidArray[2*n + 1 - i]] : "";
+                ic.alnChainsAnno[chainid1][i].push(title);
+            }
+
+            // empty line
+            ic.alnChainsAnno[chainid1][2*n + 2].push("");    
+            
+            return hAtoms;
+        }
+
+        getResObject(chainid, bGap, bAligned, resi, resn, resn_t) { let  ic = this.icn3d, me = ic.icn3dui;
+            let  resObject = {};
+            let  pos = chainid.indexOf('_');
+            resObject.mmdbid = chainid.substr(0, pos);
+            resObject.chain = chainid.substr(pos+1);
+            resObject.resi = (bGap) ? '' : resi; // resi will be empty if there is no coordinates
+            resObject.resn = (bGap) ? '-' : ((bAligned) ? resn.toUpperCase() : resn.toLowerCase());
+            resObject.aligned = (bGap) ? false : bAligned;
+            resObject.color = (bGap || !bAligned) ? me.htmlCls.GREYC : ((resn == resn_t) ? "#FF0000" : "#0000FF"); // color by identity
+            resObject.color2 = (bGap || !bAligned) ? me.htmlCls.GREYC : '#' + ic.showAnnoCls.getColorhexFromBlosum62(resn, resn_t); // color by conservation
+            resObject.class = (bGap || !bAligned) ? 'icn3d-nalign' : 'icn3d-align';
+
+            return resObject;
+        }
+
+        getResi(chainid, resiPos, bRealign) { let ic = this.icn3d; ic.icn3dui;
+            let resi;
+
+            if(bRealign) {
+                resi = resiPos;
+            }
+            else {
+                if(ic.chainsSeq[chainid][resiPos] === undefined) {
+                    resi = '';
+                }
+                else {
+                    resi = ic.chainsSeq[chainid][resiPos].resi;
+                }
+            }
+
+            return resi;
+        }
+
+        getResn(chainid, resiPos, bRealign) { let  ic = this.icn3d, me = ic.icn3dui;
+            let resn;
+      
+            if(bRealign) {
+                let resid = chainid + '_' + resiPos;
+
+                if(ic.residues[resid] === undefined) {
+                    resn = '';
+                }
+                else {
+                    resn = me.utilsCls.residueName2Abbr(ic.firstAtomObjCls.getFirstAtomObj(ic.residues[resid]).resn.substr(0, 3));
+                }
+            }
+            else {
+                if(ic.chainsSeq[chainid][resiPos] === undefined) {
+                    resn = '';
+                }
+                else {
+                    resn = ic.chainsSeq[chainid][resiPos].name;
+                }
+            }
+
+            return resn;
+        }
+
+        getResiPosInTemplate(chainid1, resi_t) { let ic = this.icn3d; ic.icn3dui;
+            // check the number of gaps before resiStart1 (nGap), and insert 'notAlnLen2 - notAlnLen1 - nGap' gaps
+            let nGap = 0;
+
+            let pos_t; // position to add gap
+            for(let j = 0, jl = ic.alnChainsSeq[chainid1].length; j < jl; ++j) {
+                //add gap before the mapping region       
+                if(parseInt(ic.alnChainsSeq[chainid1][j].resi) == resi_t) {
+                    pos_t = j;
+                    break;
+                }
+
+                if(ic.alnChainsSeq[chainid1][j].resn == '-') {
+                    ++nGap;
+                }
+                else {
+                    nGap = 0;
+                }
+            }
+
+            return {"pos": pos_t, "ngap": nGap};
+        }
+
+        addGapAllAlnChains(chainidArray, alignedChainIndice, chainid1, resi_t, len) { let ic = this.icn3d; ic.icn3dui;    
+            let result = this.getResiPosInTemplate(chainid1, resi_t);
+            let nGap = result.ngap, pos_t = result.pos;
+
+            // add gaps for all previously aligned sequences, not the current sequence, which is the last one
+            for(let j = 0, jl = alignedChainIndice.length - 1; j < jl; ++j) {
+                let chainidTmp = chainidArray[alignedChainIndice[j]];
+                let gapResObject = this.getResObject(chainidTmp, true);
+                for(let k = 0, kl = len - nGap; k < kl; ++k) {
+                    ic.alnChainsSeq[chainidTmp].splice(pos_t, 0, gapResObject);
+                }
+            }
+
+            //return len - nGap;
+        }
+
+        insertNotAlignRes(chainid, start, len, bRealign) { let ic = this.icn3d; ic.icn3dui;
+            // insert non-aligned residues in query seq
+            for(let j = 0, jl = len; j < jl; ++j) {
+                let resi2 = this.getResi(chainid, start + j, bRealign);
+                let resn2 = this.getResn(chainid, start + j, bRealign);
+                let resn1 = '-';
+                let bAlign = false;
+                let resObject = this.getResObject(chainid, false, bAlign, resi2, resn2, resn1);
+                ic.alnChainsSeq[chainid].push(resObject);
+            }
+        }
+
+        getTemplatePosFromOriPos(chainid1, start, end, bRealign) { let ic = this.icn3d; ic.icn3dui;
+            let startResi = this.getResi(chainid1, start, bRealign);
+            let endResi = this.getResi(chainid1, end, bRealign);
+                
+            let result1 = this.getResiPosInTemplate(chainid1, startResi);
+            let result2 = this.getResiPosInTemplate(chainid1, endResi);
+            
+            return {"pos1": result1.pos, "pos2": result2.pos};
+        }
+
+        mergeTwoSeqForAll(chainidArray, index, alignedChainIndice, resi2range_t, start_t, end_t, bRealign) { let  ic = this.icn3d, me = ic.icn3dui;
+            let hAtoms = {};
+
+            let chainid = chainidArray[index];
+            let chainIndex = index - 1;
+
+            //loadSeqAlignment
+            let mmdbid1, mmdbid2, chain1, chain2, chainid1, chainid2;
+            let pos1, pos2;
+
+            pos1 = chainidArray[0].indexOf('_');
+            pos2 = chainid.indexOf('_');
+
+            //mmdbid1 = ic.mmdbid_t; 
+            mmdbid1 = chainidArray[0].substr(0, pos1).toUpperCase();
+            mmdbid2 = chainid.substr(0, pos2).toUpperCase();
+
+            chain1 = chainidArray[0].substr(pos1 + 1);
+            chain2 = chainid.substr(pos2 + 1);
+
+            if(mmdbid1 == mmdbid2 && chain1 == chain2) {
+                let  chainLen = ic.chainsSeq[ic.mmdbid_q + '_' + ic.chain_q].length;
+                ic.qt_start_end[chainIndex] =  {"q_start":1, "q_end": chainLen, "t_start":1, "t_end": chainLen};
+            }
+
+            chainid1 = mmdbid1 + "_" + chain1;
+            chainid2 = mmdbid2 + "_" + chain2;
+
+            if(mmdbid2 !== undefined && mmdbid2 === ic.mmdbid_t) {
+                chainid2 = mmdbid2 + me.htmlCls.postfix + "_" + chain2;
+            }
+
+            //ic.alnChainsSeq[chainid2] = [];
+            ic.alnChains[chainid2] = {};
+
+            //ic.conservedName1 = chainid1 + '_cons';
+            //ic.nonConservedName1 = chainid1 + '_ncons';
+            //ic.notAlignedName1 = chainid1 + '_nalign';
+
+            ic.conservedName2 = chainid2 + '_cons';
+            ic.nonConservedName2 = chainid2 + '_ncons';
+            ic.notAlignedName2 = chainid2 + '_nalign';
+
+            //ic.consHash1 = {};
+            //ic.nconsHash1 = {};
+            //ic.nalignHash1 = {};
+
+            ic.consHash2 = {};
+            ic.nconsHash2 = {};
+            ic.nalignHash2 = {};
+            let  prevIndex1, prevIndex2;
+
+            if(ic.qt_start_end[chainIndex] === undefined) return;
+
+            this.getResObject(chainid1, true);
+            let gapResObject2 = this.getResObject(chainid2, true);
+            // ic.chainsMapping is used for reference number
+            if(!ic.chainsMapping[chainid1]) ic.chainsMapping[chainid1] = {};
+            if(!ic.chainsMapping[chainid2]) ic.chainsMapping[chainid2] = {};
+
+            let result;
+
+            for(let i = 0, il = ic.qt_start_end[chainIndex].length; i < il; ++i) {
+                let  start1, start2, end1, end2;
+                if(bRealign) { // real residue numbers are stored
+                    start1 = ic.qt_start_end[chainIndex][i].t_start;
+                    start2 = ic.qt_start_end[chainIndex][i].q_start;
+                    end1 = ic.qt_start_end[chainIndex][i].t_end;
+                    end2 = ic.qt_start_end[chainIndex][i].q_end;  
+                }
+                else {
+                    start1 = ic.qt_start_end[chainIndex][i].t_start - 1;
+                    start2 = ic.qt_start_end[chainIndex][i].q_start - 1;
+                    end1 = ic.qt_start_end[chainIndex][i].t_end - 1;
+                    end2 = ic.qt_start_end[chainIndex][i].q_end - 1;  
+                }
+
+                // 1. before the mapped residues
+                let resiStart1 = this.getResi(chainid1, start1, bRealign);
+                //let resiEnd1 = this.getResi(chainid1, end1, bRealign);
+                //let prevResiEnd1 = this.getResi(chainid1, prevIndex1, bRealign);
+                //let resiStart_t = this.getResi(chainid1, start_t, bRealign);
+
+                //let range = resi2range_t[resiStart1];
+      
+                // if the mapping does not start from start_t, add gaps to the query seq
+                if(i == 0) {
+                    result = this.getTemplatePosFromOriPos(chainid1, start_t, start1, bRealign);
+                    pos1 = result.pos1;
+                    pos2 = result.pos2;
+
+                    if(start1 > start_t) {
+                        for(let j = 0, jl = pos2 - pos1; j < jl; ++j) {
+                            ic.alnChainsSeq[chainid2].push(gapResObject2);
+                        }
+                    }
+                }
+                else {
+                    //let notAlnLen1 = start1 - (prevIndex1 + 1);
+                    result = this.getTemplatePosFromOriPos(chainid1, prevIndex1, start1, bRealign);
+                    pos1 = result.pos1;
+                    pos2 = result.pos2;
+                    let notAlnLen1 = pos2 - (pos1 + 1);
+                    let notAlnLen2 = start2 - (prevIndex2 + 1);
+                    
+                    // insert non-aligned residues in query seq
+                    this.insertNotAlignRes(chainid2, prevIndex2+1, notAlnLen2, bRealign);
+
+                    if(notAlnLen1 >= notAlnLen2) {
+                        // add gaps before the query sequence
+                        for(let j = 0, jl = notAlnLen1 - notAlnLen2; j < jl; ++j) {
+                            ic.alnChainsSeq[chainid2].push(gapResObject2);
+                        }                       
+                    }
+                    else {
+                        // check the number of gaps before resiStart1 (n), and insert 'notAlnLen2 - notAlnLen1 - n' gaps
+                        this.addGapAllAlnChains(chainidArray, alignedChainIndice, chainid1, resiStart1, notAlnLen2 - notAlnLen1);
+                    }                           
+                }
+
+                // 2. In the mapped residues
+                result = this.getTemplatePosFromOriPos(chainid1, start1, end1, bRealign);
+                pos1 = result.pos1;
+                pos2 = result.pos2;
+      
+                let k = 0;    
+                for(let j = pos1; j <= pos2; ++j) {
+                    // inherit the gaps from the template
+                    if(ic.alnChainsSeq[chainid1][j].resn == '-') {
+                        ic.alnChainsSeq[chainid2].push(gapResObject2);
+                    }
+                    else {                   
+                        let resi2 = this.getResi(chainid2, start2 + k, bRealign);
+                        let resn2 = this.getResn(chainid2, start2 + k, bRealign);
+                        let resn1 = this.getResn(chainid1, start1 + k, bRealign);
+                        let bAlign = true;
+                        let resObject = this.getResObject(chainid2, false, bAlign, resi2, resn2, resn1);
+                        ic.alnChainsSeq[chainid2].push(resObject);
+                        // update color in the template
+                        ic.alnChainsSeq[chainid1][j].color = resObject.color;
+
+                        //if(ic.alnChains[chainid2] === undefined) ic.alnChains[chainid2] = {}
+                        $.extend(ic.alnChains[chainid2], ic.residues[chainid2 + '_' + resi2] );
+                        hAtoms = me.hashUtilsCls.unionHash(hAtoms, ic.residues[chainid2 + '_' + resi2]);
+
+                        ++k;
+                    }
+                }
+
+                prevIndex1 = end1;
+                prevIndex2 = end2;  
+            }  
+
+            // add gaps at the end
+            result = this.getTemplatePosFromOriPos(chainid1, prevIndex1, end_t, bRealign);
+            pos1 = result.pos1;
+            pos2 = result.pos2;
+            for(let i = pos1; i < pos2; ++i) {
+                ic.alnChainsSeq[chainid2].push(gapResObject2);           
+            }     
+
+            return hAtoms;
         }
 
         setSeqAlignForRealign(chainid_t, chainid, chainIndex) { let  ic = this.icn3d, me = ic.icn3dui;
-
               //var chainid_t = ic.chainidArray[0];
 
         //      let  structureArray = Object.keys(ic.structures);
@@ -33930,87 +41794,87 @@ var icn3d = (function (exports) {
         }
 
         setSeqPerResi(chainid, chainid1, chainid2, resi, resn, bAligned, color, color2, classname, bFirstChain, bFirstResi, alignIndex) { let  ic = this.icn3d, me = ic.icn3dui;
-              if(ic.alnChainsSeq[chainid] === undefined) ic.alnChainsSeq[chainid] = [];
+            if(ic.alnChainsSeq[chainid] === undefined) ic.alnChainsSeq[chainid] = [];
 
-              let  resObject = {};
-              let  pos = chainid.indexOf('_');
-              resObject.mmdbid = chainid.substr(0, pos);
-              resObject.chain = chainid.substr(pos+1);
-              resObject.resi = resi;
-              // resi will be empty if there is no coordinates
-              resObject.resn =(resObject.resi === '' || classname === 'icn3d-nalign') ? resn.toLowerCase() : resn;
-              resObject.aligned = bAligned;
-              // resi will be empty if there is no coordinates
-              resObject.color =(resObject.resi === '') ? me.htmlCls.GREYC : color; // color by identity
-              resObject.color2 =(resObject.resi === '') ? me.htmlCls.GREYC : color2; // color by conservation
-              resObject.class = classname;
+            let  resObject = {};
+            let  pos = chainid.indexOf('_');
+            resObject.mmdbid = chainid.substr(0, pos);
+            resObject.chain = chainid.substr(pos+1);
+            resObject.resi = resi;
+            // resi will be empty if there is no coordinates
+            resObject.resn =(resObject.resi === '' || classname === 'icn3d-nalign') ? resn.toLowerCase() : resn;
+            resObject.aligned = bAligned;
+            // resi will be empty if there is no coordinates
+            resObject.color =(resObject.resi === '') ? me.htmlCls.GREYC : color; // color by identity
+            resObject.color2 =(resObject.resi === '') ? me.htmlCls.GREYC : color2; // color by conservation
+            resObject.class = classname;
 
-              ic.alnChainsSeq[chainid].push(resObject);
+            ic.alnChainsSeq[chainid].push(resObject);
 
-              if(resObject.resi !== '') {
-                  if(ic.alnChains[chainid] === undefined) ic.alnChains[chainid] = {};
-                  $.extend(ic.alnChains[chainid], ic.residues[chainid + '_' + resObject.resi] );
-              }
+            if(resObject.resi !== '') {
+                if(ic.alnChains[chainid] === undefined) ic.alnChains[chainid] = {};
+                $.extend(ic.alnChains[chainid], ic.residues[chainid + '_' + resObject.resi] );
+            }
 
-              if(bFirstChain) {
-                  // annotation is for the master seq only
-                  if(ic.alnChainsAnno[chainid] === undefined ) ic.alnChainsAnno[chainid] = [];
-                  if(ic.alnChainsAnno[chainid][0] === undefined ) ic.alnChainsAnno[chainid][0] = [];
-                  if(ic.alnChainsAnno[chainid][1] === undefined ) ic.alnChainsAnno[chainid][1] = [];
-                  if(ic.alnChainsAnno[chainid][2] === undefined ) ic.alnChainsAnno[chainid][2] = [];
-                  if(ic.alnChainsAnno[chainid][3] === undefined ) ic.alnChainsAnno[chainid][3] = [];
-                  if(bFirstResi) {
-                      // empty line
-                      // 2nd chain title
-                      if(ic.alnChainsAnno[chainid][4] === undefined ) ic.alnChainsAnno[chainid][4] = [];
-                      // master chain title
-                      if(ic.alnChainsAnno[chainid][5] === undefined ) ic.alnChainsAnno[chainid][5] = [];
-                      // empty line
-                      if(ic.alnChainsAnno[chainid][6] === undefined ) ic.alnChainsAnno[chainid][6] = [];
+            if(bFirstChain) {
+                // annotation is for the master seq only
+                if(ic.alnChainsAnno[chainid] === undefined ) ic.alnChainsAnno[chainid] = [];
+                if(ic.alnChainsAnno[chainid][0] === undefined ) ic.alnChainsAnno[chainid][0] = [];
+                if(ic.alnChainsAnno[chainid][1] === undefined ) ic.alnChainsAnno[chainid][1] = [];
+                if(ic.alnChainsAnno[chainid][2] === undefined ) ic.alnChainsAnno[chainid][2] = [];
+                if(ic.alnChainsAnno[chainid][3] === undefined ) ic.alnChainsAnno[chainid][3] = [];
+                if(bFirstResi) {
+                    // empty line
+                    // 2nd chain title
+                    if(ic.alnChainsAnno[chainid][4] === undefined ) ic.alnChainsAnno[chainid][4] = [];
+                    // master chain title
+                    if(ic.alnChainsAnno[chainid][5] === undefined ) ic.alnChainsAnno[chainid][5] = [];
+                    // empty line
+                    if(ic.alnChainsAnno[chainid][6] === undefined ) ic.alnChainsAnno[chainid][6] = [];
 
-                      let  title1 = ic.pdbid_chain2title && ic.pdbid_chain2title.hasOwnProperty(chainid2) ? ic.pdbid_chain2title[chainid2] : "";
-                      let  title2 = ic.pdbid_chain2title && ic.pdbid_chain2title.hasOwnProperty(chainid) ? ic.pdbid_chain2title[chainid] : "";
-                      ic.alnChainsAnno[chainid][4].push(title1);
-                      ic.alnChainsAnno[chainid][5].push(title2);
-                      ic.alnChainsAnno[chainid][6].push('');
-                  }
+                    let  title1 = ic.pdbid_chain2title && ic.pdbid_chain2title.hasOwnProperty(chainid2) ? ic.pdbid_chain2title[chainid2] : "";
+                    let  title2 = ic.pdbid_chain2title && ic.pdbid_chain2title.hasOwnProperty(chainid) ? ic.pdbid_chain2title[chainid] : "";
+                    ic.alnChainsAnno[chainid][4].push(title1);
+                    ic.alnChainsAnno[chainid][5].push(title2);
+                    ic.alnChainsAnno[chainid][6].push('');
+                }
 
-                  let  symbol = '.';
-                  if(alignIndex % 5 === 0) symbol = '*';
-                  if(alignIndex % 10 === 0) symbol = '|';
-                  ic.alnChainsAnno[chainid][2].push(symbol); // symbol: | for 10th, * for 5th, . for rest
+                let  symbol = '.';
+                if(alignIndex % 5 === 0) symbol = '*';
+                if(alignIndex % 10 === 0) symbol = '|';
+                ic.alnChainsAnno[chainid][2].push(symbol); // symbol: | for 10th, * for 5th, . for rest
 
-                  let  numberStr = '';
-                  if(alignIndex % 10 === 0) numberStr = alignIndex.toString();
-                  ic.alnChainsAnno[chainid][3].push(numberStr); // symbol: 10, 20, etc, empty for rest
+                let  numberStr = '';
+                if(alignIndex % 10 === 0) numberStr = alignIndex.toString();
+                ic.alnChainsAnno[chainid][3].push(numberStr); // symbol: 10, 20, etc, empty for rest
 
-                  let  residueid = chainid + '_' + resi;
-                  let  ss = ic.secondaries[residueid];
+                let  residueid = chainid + '_' + resi;
+                let  ss = ic.secondaries[residueid];
 
-                  if(ss !== undefined) {
-                      ic.alnChainsAnno[chainid][1].push(ss);
-                  }
-                  else {
-                      ic.alnChainsAnno[chainid][1].push('-');
-                  }
-              }
-              else {
-                  let  residueid = chainid + '_' + resi;
-                  let  ss = ic.secondaries[residueid];
+                if(ss !== undefined) {
+                    ic.alnChainsAnno[chainid][1].push(ss);
+                }
+                else {
+                    ic.alnChainsAnno[chainid][1].push('-');
+                }
+            }
+            else {
+                let  residueid = chainid + '_' + resi;
+                let  ss = ic.secondaries[residueid];
 
-                  if(ic.alnChainsAnno.hasOwnProperty(chainid1) && ic.alnChainsAnno[chainid1].length > 0) {
-                      if(ss !== undefined) {
-                          ic.alnChainsAnno[chainid1][0].push(ss);
-                      }
-                      else {
-                          ic.alnChainsAnno[chainid1][0].push('-');
-                      }
-                  }
-                  else {
-                      console.log("Error: ic.alnChainsAnno[chainid1] is undefined");
-                  }
-              }
-        }
+                if(ic.alnChainsAnno.hasOwnProperty(chainid1) && ic.alnChainsAnno[chainid1].length > 0) {
+                    if(ss !== undefined) {
+                        ic.alnChainsAnno[chainid1][0].push(ss);
+                    }
+                    else {
+                        ic.alnChainsAnno[chainid1][0].push('-');
+                    }
+                }
+                else {
+                    console.log("Error: ic.alnChainsAnno[chainid1] is undefined");
+                }
+            }
+        }   
     }
 
     /**
@@ -34047,19 +41911,31 @@ var icn3d = (function (exports) {
                       if(!me.cfg.bSidebyside) me.htmlCls.dialogCls.openDlg('dl_rmsd', 'Realignment RMSD');
                   }
 
+                  let chainDone = {};
                   for(let i = 0, il = ic.structures[secondStruct].length; i < il; ++i) {
                       let  chainidTmp = ic.structures[secondStruct][i];
+                      // some chains were pushed twice in some cases
+                      if(chainDone.hasOwnProperty(chainidTmp)) continue;
 
                       for(let j in ic.chains[chainidTmp]) {
                         let  atom = ic.atoms[j];
                         atom.coord = ic.surfaceCls.transformMemPro(atom.coord, rot, centerFrom, centerTo);
                       }
+
+                      chainDone[chainidTmp] = 1;
                   }
 
                   ic.bRealign = true;
 
-                  if(!bKeepSeq) ic.setSeqAlignCls.setSeqAlignForRealign(chainid_t, chainid, chainIndex);
+                  if(!bChainAlign) {
+                    ic.opts['color'] = 'identity';
+                    ic.setColorCls.setColorByOptions(ic.opts, ic.hAtoms);
+                  }
 
+    /*
+                  //if(!bKeepSeq) ic.setSeqAlignCls.setSeqAlignForRealign(chainid_t, chainid, chainIndex);
+                  ic.setSeqAlignCls.setSeqAlignForRealign(chainid_t, chainid, chainIndex);
+             
                   let  bShowHighlight = false;
                   let  seqObj = me.htmlCls.alignSeqCls.getAlignSequencesAnnotations(Object.keys(ic.alnChains), undefined, undefined, bShowHighlight);
 
@@ -34068,19 +41944,54 @@ var icn3d = (function (exports) {
                   $("#" + ic.pre + "dl_sequence2").width(me.htmlCls.RESIDUE_WIDTH * seqObj.maxSeqCnt + 200);
 
                   me.htmlCls.dialogCls.openDlg('dl_alignment', 'Select residues in aligned sequences');
+    */
+                  // assign ic.qt_start_end
+                  if(!ic.qt_start_end) ic.qt_start_end = [];
 
-                  if(!bChainAlign) {
-                      ic.opts['color'] = 'identity';
-                      ic.setColorCls.setColorByOptions(ic.opts, ic.hAtoms);
-                  }
-
-                  //ic.drawCls.draw();
+                  let curr_qt_start_end = this.getQtStartEndFromRealignResid(chainid_t, chainid);
+                  ic.qt_start_end.push(curr_qt_start_end);
 
                   hAtoms = ic.hAtoms;
               }
           }
 
           return hAtoms;
+        }
+
+        getQtStartEndFromRealignResid(chainid_t, chainid_q) { let ic = this.icn3d; ic.icn3dui;
+            let  struct_t = chainid_t.substr(0, chainid_t.indexOf('_')); 
+            let  struct_q = chainid_q.substr(0, chainid_q.indexOf('_')); 
+
+            let qt_start_end = [];
+
+            let resi2pos_t = {};
+            for(let i = 0, il = ic.chainsSeq[chainid_t].length; i < il; ++i) {
+                let resi = ic.chainsSeq[chainid_t][i].resi;
+                resi2pos_t[resi] = i + 1;
+            }
+
+            let resi2pos_q = {};
+            for(let i = 0, il = ic.chainsSeq[chainid_q].length; i < il; ++i) {
+                let resi = ic.chainsSeq[chainid_q][i].resi;
+                resi2pos_q[resi] = i + 1;
+            }
+
+            for(let i = 0, il = ic.realignResid[struct_t].length; i < il; ++i) {
+                let resid_t = ic.realignResid[struct_t][i].resid;
+                let pos_t = resid_t.lastIndexOf('_');
+                let resi_t = parseInt(resid_t.substr(pos_t + 1));
+
+                let resid_q = ic.realignResid[struct_q][i].resid;
+                let pos_q = resid_q.lastIndexOf('_');
+                let resi_q = parseInt(resid_q.substr(pos_q + 1));
+
+                let resiPos_t = resi2pos_t[resi_t];
+                let resiPos_q = resi2pos_q[resi_q];
+
+                qt_start_end.push({"q_start": resiPos_q, "q_end": resiPos_q, "t_start": resiPos_t, "t_end": resiPos_t}); 
+            }
+
+            return qt_start_end;
         }
 
         getMissingResidues(seqArray, type, chainid) { let  ic = this.icn3d, me = ic.icn3dui;
@@ -34454,7 +42365,7 @@ var icn3d = (function (exports) {
 
           //var dxymax = npoint / 2.0 * step;
 
-          pdbid =(pdbid) ? pdbid.toUpperCase() : 'stru';
+          pdbid =(pdbid) ? pdbid.toUpperCase() : 'STRU';
 
           ic.structures[pdbid].push(pdbid + '_MEM');
           ic.chains[pdbid + '_MEM'] = {};
@@ -34577,7 +42488,7 @@ var icn3d = (function (exports) {
                   me.cfg.command = me.cfg.command.replace(new RegExp('!','g'), id + '_');
               }
               // final step resolved ic.deferred
-              ic.loadScriptCls.loadScript(me.cfg.command);
+              if(me.cfg.mmdbafid === undefined) ic.loadScriptCls.loadScript(me.cfg.command);
           }
           else {
               if(me.deferred !== undefined) me.deferred.resolve(); if(ic.deferred2 !== undefined) ic.deferred2.resolve();
@@ -34585,11 +42496,11 @@ var icn3d = (function (exports) {
           //if(me.cfg.align !== undefined || me.cfg.chainalign !== undefined || ic.bRealign ||( ic.bInputfile && ic.InputfileType == 'pdb' && Object.keys(ic.structures).length >= 2) ) {
           if(Object.keys(ic.structures).length >= 2) {
               $("#" + ic.pre + "mn2_alternateWrap").show();
-              $("#" + ic.pre + "mn2_realignWrap").show();
+              //$("#" + ic.pre + "mn2_realignWrap").show();
           }
           else {
               $("#" + ic.pre + "mn2_alternateWrap").hide();
-              $("#" + ic.pre + "mn2_realignWrap").hide();
+              //$("#" + ic.pre + "mn2_realignWrap").hide();
           }
           // display the structure right away. load the mns and sequences later
           setTimeout(function(){
@@ -34684,7 +42595,7 @@ var icn3d = (function (exports) {
               dataType: dataType,
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               beforeSend: function() {
                   ic.ParserUtilsCls.showLoading();
               },
@@ -34700,7 +42611,7 @@ var icn3d = (function (exports) {
                       dataType: 'jsonp',
                       cache: true,
                       tryCount : 0,
-                      retryLimit : 1,
+                      retryLimit : 0, //1
                       beforeSend: function() {
                           ic.ParserUtilsCls.showLoading();
                       },
@@ -34768,7 +42679,7 @@ var icn3d = (function (exports) {
               dataType: dataType,
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               success: function(data) {
                   // notebook has a problem in posting data to mmcifparser.cgi
                   if(me.cfg.notebook) {
@@ -34924,7 +42835,7 @@ var icn3d = (function (exports) {
                       dataType: 'jsonp',
                       cache: true,
                       tryCount : 0,
-                      retryLimit : 1,
+                      retryLimit : 0, //1
                       success: function(data) {
                           if(data.emd !== undefined) ic.emd = data.emd;
                           if(data.organism !== undefined) ic.organism = data.organism;
@@ -34998,7 +42909,7 @@ var icn3d = (function (exports) {
         //loadAtomDataIn. The deferred parameter was resolved after the parsing so that other javascript code can be executed.
         loadMmcifData(data, mmcifid) { let ic = this.icn3d; ic.icn3dui;
             if(!mmcifid) mmcifid = data.mmcif;
-            if(!mmcifid) mmcifid = 'stru';
+            if(!mmcifid) mmcifid = 'STRU';
 
             if(data.atoms !== undefined) {
                 ic.init();
@@ -35367,6 +43278,7 @@ var icn3d = (function (exports) {
 
                                 // protein chains
                                 let residueid, from, to;
+                                let structure = chainid.substr(0, chainid.indexOf('_'));
                                 for(let i = 0, il = fromArray.length; i < il; ++i) {
                                     from = parseInt(fromArray[i]);
                                     to = parseInt(toArray[i]);
@@ -35374,7 +43286,16 @@ var icn3d = (function (exports) {
                                     for(let j = from; j <= to; ++j) {
                                         if(ic.bNCBI && ($(that).attr('domain') !== undefined || $(that).attr('feat') !== undefined || $(that).attr('3ddomain') !== undefined) ) {
                                             let residNCBI = chainid + '_' + (j+1).toString();
-                                            residueid = ic.residNCBI2resid[residNCBI];
+                                            // AlphaFold domains calculated on-the-fly have no conversion
+                                            if(structure.length > 4) {
+                                                residueid = residNCBI;
+                                            }
+                                            else if(ic.residNCBI2resid[residNCBI]) {
+                                                residueid = ic.residNCBI2resid[residNCBI];
+                                            }
+                                            else {
+                                                residueid = residNCBI;
+                                            }
                                         }
                                         else {
                                             residueid = chainid + '_' + (j+1).toString();
@@ -35392,7 +43313,6 @@ var icn3d = (function (exports) {
                                 else {
                                     ic.selectionCls.selectResidueList(residueidHash, commandname, commanddescr, false);
                                 }
-
                                 //ic.hlUpdateCls.updateHlAll();
 
                                 residueid = chainid + '_' + parseInt((from + to)/2).toString();
@@ -35408,11 +43328,21 @@ var icn3d = (function (exports) {
 
                                 //var  atomHash = {}, residueidHash = {}
                                 let residueid;
+                                let structure = chainid.substr(0, chainid.indexOf('_'));
                                 for(let i = 0, il = posArray.length; i < il; ++i) {
                                     if($(that).attr('site') !== undefined) {
                                         if(ic.bNCBI) {
                                             let residNCBI = chainid + '_' +(parseInt(posArray[i])+1).toString();
-                                            residueid = ic.residNCBI2resid[residNCBI];
+                                            // AlphaFold domains calculated on-the-fly have no conversion
+                                            if(structure.length > 4) {
+                                                residueid = residNCBI;
+                                            }
+                                            else if(ic.residNCBI2resid[residNCBI]) {
+                                                residueid = ic.residNCBI2resid[residNCBI];
+                                            }
+                                            else {
+                                                residueid = residNCBI;
+                                            }
                                         }
                                         else {
                                             residueid = chainid + '_' +(parseInt(posArray[i])+1).toString();
@@ -35572,6 +43502,7 @@ var icn3d = (function (exports) {
 
             if(ic.bAnnoShown === undefined || !ic.bAnnoShown || ic.bResetAnno) { // ic.bResetAnno when loading another structure
                 let chainArray = Object.keys(ic.chains);
+
                 if(ic.giSeq === undefined) ic.giSeq = {};
                 if(ic.currClin === undefined) ic.currClin = {};
                 if(ic.resi2disease_nonempty === undefined) ic.resi2disease_nonempty = {};
@@ -35684,7 +43615,7 @@ var icn3d = (function (exports) {
                       dataType: 'jsonp',
                       //dataType: 'json',
                       tryCount : 0,
-                      retryLimit : 1,
+                      retryLimit : 0, //1
                       success: function(data) {
                         ic.seqStructAlignData = data;
                         thisClass.showAnnoSeqData(nucleotide_chainid, chemical_chainid, chemical_set);
@@ -35724,7 +43655,7 @@ var icn3d = (function (exports) {
                         dataType: 'jsonp', //'text',
                         cache: true,
                         tryCount : 0,
-                        retryLimit : 1,
+                        retryLimit : 0, //1
                         success: function(chainid_seq) {
                             let index = 0;
                             for(let acc in chainid_seq) {
@@ -36106,7 +44037,7 @@ var icn3d = (function (exports) {
                       // the missing residues at the end of the seq will be filled up in the API showNewTrack()
                       let nGap = 0;
                       ic.alnChainsSeq[chnid] = [];
-                      let offset =(ic.chainid2offset[chnid]) ? ic.chainid2offset[chnid] : 0;
+                      let offset =(ic.chainid2offset[chnid]) ? ic.chainid2offset[chnid] : 0;                
                       for(let i = 0, il = targetSeq.length; i < il; ++i) {
                           //text += ic.showSeqCls.insertGap(chnid, i, '-', true);
                           if(ic.targetGapHash.hasOwnProperty(i)) {
@@ -36268,7 +44199,7 @@ var icn3d = (function (exports) {
             let chainArray = Object.keys(ic.chains);
             let chainid = chnid;
             let pos = Math.round(chainid.indexOf('_'));
-            if(pos > 4) return; // NMR structures with structure id such as 2K042,2K043, ...
+    //        if(pos > 4) return; // NMR structures with structure id such as 2K042,2K043, ...
             ic.firstAtomObjCls.getFirstCalphaAtomObj(ic.chains[chainid]);
             if(ic.chainname2residues[chainid] === undefined) {
                 ic.chainname2residues[chainid] = {};
@@ -36479,7 +44410,8 @@ var icn3d = (function (exports) {
             let pdbArray = Object.keys(ic.structures);
             // show 3D domains
             let pdbid = pdbArray[index];
-            let url = me.htmlCls.baseUrl + "mmdb/mmdb_strview.cgi?v=2&program=icn3d&domain&molinfor&uid=" + pdbid;
+            me.htmlCls.baseUrl + "mmdb/mmdb_strview.cgi?v=2&program=icn3d&domain&molinfor&uid=" + pdbid;
+
             if(index == 0 && ic.mmdb_data !== undefined) {
                 for(let chnid in ic.protein_chainid) {
                     if(chnid.indexOf(pdbid) !== -1) {
@@ -36494,70 +44426,49 @@ var icn3d = (function (exports) {
                     }
                 }
             }
-            else {
-                $.ajax({
-                  url: url,
-                  dataType: 'json',
-                  cache: true,
-                  tryCount : 0,
-                  retryLimit : 1,
-                  success: function(data) {
-                    ic.mmdb_dataArray[index] = data;
-                    for(let chnid in ic.protein_chainid) {
-                        if(chnid.indexOf(pdbid) !== -1) {
-                            thisClass.showDomainWithData(chnid, ic.mmdb_dataArray[index]);
-                        }
-                    }
-                    // add here after the ajax call
-                    ic.showAnnoCls.enableHlSeq();
-                    ic.bAjax3ddomain = true;
-                    ic.bAjaxDoneArray[index] = true;
-                    if(ic.deferred3ddomain !== undefined) {
-                        if(me.cfg.align === undefined || me.cfg.chainalign === undefined || ic.bRealign) {
-                            ic.deferred3ddomain.resolve();
-                        }
-                        else {
-                            let bAjaxDoneAll = true;
-                            for(let i = 0, il = pdbArray.length; i < il; ++i) {
-                                bAjaxDoneAll = bAjaxDoneAll && ic.bAjaxDoneArray[i];
+            else {                  
+                // calculate 3D domains on-the-fly
+                //ic.protein_chainid[chainArray[i]] 
+                let data = {};
+                data.domains = {};
+                for(let chainid in ic.chains) {
+                    let structure = chainid.substr(0, chainid.indexOf('_'));
+                    if(pdbid == structure && ic.protein_chainid.hasOwnProperty(chainid)) {
+                        data.domains[chainid] = {};
+                        data.domains[chainid].domains = [];
+
+                        let atoms = ic.chains[chainid];
+
+                        let result = ic.domain3dCls.c2b_NewSplitChain(atoms);
+                        let subdomains = result.subdomains;
+                        //let substruct = result.substruct;
+
+                        //let jsonStr = ic.domain3dCls.getDomainJsonForAlign(atoms);
+                
+                        for(let i = 0, il = subdomains.length; i < il; ++i) {
+                            // domain item: {"sdid":1722375,"intervals":[[1,104],[269,323]]}
+                            let domain = {};
+                            domain.intervals = [];
+
+                            for(let j = 0, jl = subdomains[i].length; j < jl; j += 2) {
+                                domain.intervals.push([subdomains[i][j], subdomains[i][j+1]]);
                             }
-                            if(bAjaxDoneAll) ic.deferred3ddomain.resolve();
+
+                            data.domains[chainid].domains.push(domain);
                         }
                     }
-                  },
-                  error : function(xhr, textStatus, errorThrown ) {
-                    this.tryCount++;
-                    if(this.tryCount <= this.retryLimit) {
-                        //try again
-                        $.ajax(this);
-                        return;
+                }
+
+                ic.mmdb_dataArray[index] = data;
+                let bCalcDirect = true;
+                for(let chnid in ic.protein_chainid) {
+                    if(chnid.indexOf(pdbid) !== -1) {
+                        thisClass.showDomainWithData(chnid, ic.mmdb_dataArray[index], bCalcDirect);
                     }
-                    console.log( "No 3D domain data were found for the protein " + pdbid + "..." );
-                    for(let chnid in ic.protein_chainid) {
-                        if(chnid.indexOf(pdbid) !== -1) {
-                            $("#" + ic.pre + "dt_domain_" + chnid).html('');
-                            $("#" + ic.pre + "ov_domain_" + chnid).html('');
-                            $("#" + ic.pre + "tt_domain_" + chnid).html('');
-                        }
-                    }
-                    ic.showAnnoCls.enableHlSeq();
-                    ic.bAjax3ddomain = true;
-                    //bAjaxDone1 = true;
-                    if(ic.deferred3ddomain !== undefined) {
-                        if(me.cfg.align === undefined || me.cfg.chainalign === undefined) {
-                            ic.deferred3ddomain.resolve();
-                        }
-                        else {
-                            let bAjaxDoneAll = true;
-                            for(let i = 0, il = pdbArray.length; i < il; ++i) {
-                                bAjaxDoneAll = bAjaxDoneAll && ic.bAjaxDoneArray[i];
-                            }
-                            if(bAjaxDoneAll) ic.deferred3ddomain.resolve();
-                        }
-                    }
-                    return;
-                  }
-                });
+                }
+
+                ic.bAjax3ddomain = true;
+                ic.bAjaxDoneArray[index] = true;          
             }
         }
 
@@ -36576,28 +44487,36 @@ var icn3d = (function (exports) {
                 this.showDomainPerStructure(i);
             }
         }
-        showDomainWithData(chnid, data) { let ic = this.icn3d, me = ic.icn3dui;
+        showDomainWithData(chnid, data, bCalcDirect) { let ic = this.icn3d, me = ic.icn3dui;
             let html = '<div id="' + ic.pre + chnid + '_domainseq_sequence" class="icn3d-dl_sequence">';
             let html2 = html;
             let html3 = html;
             let domainArray, proteinname;
             let pos = chnid.indexOf('_');
             let chain = chnid.substr(pos + 1);
-            let molinfo = data.moleculeInfor;
-            let currMolid;
-            for(let molid in molinfo) {
-            if(molinfo[molid].chain === chain) {
-              currMolid = molid;
-              proteinname = molinfo[molid].name;
-              break;
+
+            if(bCalcDirect) {
+                proteinname = chnid;
+                domainArray = (data.domains[chnid]) ? data.domains[chnid].domains : [];
             }
+            else {
+                let molinfo = data.moleculeInfor;
+                let currMolid;
+                for(let molid in molinfo) {
+                    if(molinfo[molid].chain === chain) {
+                    currMolid = molid;
+                    proteinname = molinfo[molid].name;
+                    break;
+                    }
+                }
+                if(currMolid !== undefined && data.domains[currMolid] !== undefined) {
+                    domainArray = data.domains[currMolid].domains;
+                }
+                if(domainArray === undefined) {
+                    domainArray = [];
+                }
             }
-            if(currMolid !== undefined && data.domains[currMolid] !== undefined) {
-              domainArray = data.domains[currMolid].domains;
-            }
-            if(domainArray === undefined) {
-              domainArray = [];
-            }
+
             for(let index = 0, indexl = domainArray.length; index < indexl; ++index) {
                 //var fulltitle = '3D domain ' +(index+1).toString() + ' of ' + proteinname + '(PDB ID: ' + data.pdbId + ')';
                 let fulltitle = '3D domain ' +(index+1).toString() + ' of ' + proteinname;
@@ -36620,7 +44539,7 @@ var icn3d = (function (exports) {
                     }
 
                     // use the NCBI residue number, and convert to PDB residue number during selection
-                    if(ic.bNCBI) {
+                    if(ic.bNCBI || bCalcDirect) {
                         fromArray.push(domainFrom);
                         toArray.push(domainTo);
                     }
@@ -36713,10 +44632,11 @@ var icn3d = (function (exports) {
             this.icn3d = icn3d;
         }
 
-        navClinVar(chnid) { let ic = this.icn3d, me = ic.icn3dui;
+        navClinVar(chnid) { let ic = this.icn3d; ic.icn3dui;
             let thisClass = this;
             ic.currClin[chnid] = - 1;
-            me.myEventCls.onIds("#" + ic.pre + chnid + "_prevclin", "click", function(e) { let ic = thisClass.icn3d;
+            //me.myEventCls.onIds("#" + ic.pre + chnid + "_prevclin", "click", function(e) { let ic = thisClass.icn3d;
+            $(document).on("click", "#" + ic.pre + chnid + "_prevclin", function(e) { let ic = thisClass.icn3d;
               e.stopImmediatePropagation();
               //e.preventDefault();
               let maxLen =(ic.resi2disease_nonempty[chnid] !== undefined) ? Object.keys(ic.resi2disease_nonempty[chnid]).length : 0;
@@ -36724,20 +44644,24 @@ var icn3d = (function (exports) {
               if(ic.currClin[chnid] < 0) ic.currClin[chnid] = maxLen - 1; // 0;
               thisClass.showClinVarLabelOn3D(chnid);
             });
-            me.myEventCls.onIds("#" + ic.pre + chnid + "_nextclin", "click", function(e) { let ic = thisClass.icn3d;
+            //me.myEventCls.onIds("#" + ic.pre + chnid + "_nextclin", "click", function(e) { let ic = thisClass.icn3d;
+            $(document).on("click", "#" + ic.pre + chnid + "_nextclin", function(e) { let ic = thisClass.icn3d;
               e.stopImmediatePropagation();
               //e.preventDefault();
               let maxLen =(ic.resi2disease_nonempty[chnid] !== undefined) ? Object.keys(ic.resi2disease_nonempty[chnid]).length : 0;
               ++ic.currClin[chnid];
+
               if(ic.currClin[chnid] > maxLen - 1) ic.currClin[chnid] = 0; // ic.resi2disease_nonempty[chnid].length - 1;
               thisClass.showClinVarLabelOn3D(chnid);
             });
         }
         showClinVarLabelOn3D(chnid) { let ic = this.icn3d, me = ic.icn3dui;
               let resiArray = Object.keys(ic.resi2disease_nonempty[chnid]);
+
               let chainid, residueid;
               chainid = chnid;
-              residueid = chainid + '_' + resiArray[ic.currClin[chnid]];
+              residueid = chainid + '_' + (parseInt(resiArray[ic.currClin[chnid]]) + ic.baseResi[chnid]).toString();
+     
               let label = '';
               let diseaseArray = ic.resi2disease_nonempty[chnid][resiArray[ic.currClin[chnid]]];
               for(let k = 0, kl = diseaseArray.length; k < kl; ++k) {
@@ -36746,6 +44670,8 @@ var icn3d = (function (exports) {
                     break;
                   }
               }
+              if(label == '') label = (diseaseArray.length > 0) ? diseaseArray[0] : "N/A";
+
               let position = ic.applyCenterCls.centerAtoms(me.hashUtilsCls.hash2Atoms(ic.residues[residueid], ic.atoms));
               //position.center.add(new THREE.Vector3(3.0, 3.0, 3.0)); // shift a little bit
               let maxlen = 30;
@@ -36768,6 +44694,9 @@ var icn3d = (function (exports) {
               }
               ic.drawCls.draw();
         }
+
+       //getSnpLine(2, 2, resi2snp, resi2rsnum, resi2clinAllele, resi2disease, resi2index, resi2sig, posarray, posClinArray, 0, chnid, false, bClinvar, undefined, bSnpOnly);
+     
         getSnpLine(line, totalLineNum, resi2snp, resi2rsnum, resi2clinAllele, resi2disease, resi2index, resi2sig, posarray, posClinArray, bStartEndRes, chnid, bOverview, bClinvar, bTitleOnly, bSnpOnly) { let ic = this.icn3d, me = ic.icn3dui;
             let html = '';
             let altName = bClinvar ? 'clinvar' : 'snp';
@@ -36803,22 +44732,25 @@ var icn3d = (function (exports) {
             else {
                 html += '<div class="icn3d-seqTitle"></div>';
             }
+
             let pre = altName;
             let snpCnt = 0, clinvarCnt = 0;
             let snpTypeHash = {}, currSnpTypeHash = {};
             for(let i = 1, il = ic.giSeq[chnid].length; i <= il; ++i) {
-                if(resi2index[i] !== undefined) {
+                if(resi2index[i] !== undefined) {            
                     ++snpCnt;
                     let allDiseaseTitle = '';
                     for(let j = 0, jl = resi2snp[i].length; j < jl && !bSnpOnly; ++j) {
                         let diseaseArray = resi2disease[i][j].split('; ');
                         let sigArray = resi2sig[i][j].split('; ');
                         let diseaseTitle = '';
-                        for(let k = 0, kl = diseaseArray.length; k < kl; ++k) {
-                            if(diseaseArray[k] != '' && diseaseArray[k] != 'not specified' && diseaseArray[k] != 'not provided') {
+                        for(let k = 0, kl = diseaseArray.length; k < kl; ++k) {   
+                            // relax the restriction to show all clinvar    
+                            //if(diseaseArray[k] != '' && diseaseArray[k] != 'not specified' && diseaseArray[k] != 'not provided') {
                                 diseaseTitle += diseaseArray[k] + '(' + sigArray[k] + '); ';
-                            }
+                            //}
                         }
+
                         if(diseaseTitle != '') {
                             snpTypeHash[i] = 'icn3d-clinvar';
                             if(j == line - 2) { // just check the current line, "line = 2" means the first SNP
@@ -36833,6 +44765,7 @@ var icn3d = (function (exports) {
                     if(allDiseaseTitle.indexOf('Pathogenic') != -1) {
                         snpTypeHash[i] = 'icn3d-clinvar-path';
                     }
+                   
                     if(snpTypeHash[i] == 'icn3d-clinvar' || snpTypeHash[i] == 'icn3d-clinvar-path') {
                         ++clinvarCnt;
                     }
@@ -36847,6 +44780,7 @@ var icn3d = (function (exports) {
                 $("#" + ic.pre + 'tt_snp_' + chnid).html('');
                 return '';
             }
+                
             if(clinvarCnt == 0 && bClinvar) {
                 $("#" + ic.pre + 'dt_clinvar_' + chnid).html('');
                 $("#" + ic.pre + 'ov_clinvar_' + chnid).html('');
@@ -36864,6 +44798,7 @@ var icn3d = (function (exports) {
                 return html + '<br>';
             }
             html += '<span class="icn3d-seqLine">';
+
             let diseaseStr = '';
             let prevEmptyWidth = 0;
             let prevLineWidth = 0;
@@ -36886,9 +44821,10 @@ var icn3d = (function (exports) {
                                 let sigArray = resi2sig[i][j].split('; ');
                                 let diseaseTitle = '';
                                 for(let k = 0, kl = diseaseArray.length; k < kl; ++k) {
-                                    if(diseaseArray[k] != '' && diseaseArray[k] != 'not specified' && diseaseArray[k] != 'not provided') {
+                                    // relax the restriction to show all clinvar
+                                    //if(diseaseArray[k] != '' && diseaseArray[k] != 'not specified' && diseaseArray[k] != 'not provided') {
                                         diseaseTitle += diseaseArray[k] + '(' + sigArray[k] + '); ';
-                                    }
+                                    //}
                                 }
                             }
                         }
@@ -36917,6 +44853,7 @@ var icn3d = (function (exports) {
                 }
                 else { // detailed view
                   html += ic.showSeqCls.insertGap(chnid, i-1, '-');
+
                   if(resi2index[i] !== undefined) {
                       if(!bClinvar && line == 1) {
                           html += '<span>&dArr;</span>'; // or down triangle &#9660;
@@ -36964,7 +44901,8 @@ var icn3d = (function (exports) {
                                     let diseaseTitle = '';
                                     let index = 0;
                                     for(let k = 0, kl = diseaseArray.length; k < kl; ++k) {
-                                        if(diseaseArray[k] != '' && diseaseArray[k] != 'not specified' && diseaseArray[k] != 'not provided') {
+                                        // relax the restriction to show all clinvar
+                                        //if(diseaseArray[k] != '' && diseaseArray[k] != 'not specified' && diseaseArray[k] != 'not provided') {
                                             if(index > 0) {
                                                 diseaseTitle += '; ';
                                             }
@@ -36973,7 +44911,7 @@ var icn3d = (function (exports) {
                                             }
                                             diseaseTitle += diseaseArray[k] + '(' + sigArray[k] + ')';
                                             ++index;
-                                        }
+                                        //}
                                     }
 
                                     //resi2rsnum, resi2clinAllele,
@@ -37043,7 +44981,8 @@ var icn3d = (function (exports) {
                                 let diseaseTitle = '';
                                 let index = 0;
                                 for(let k = 0, kl = diseaseArray.length; k < kl; ++k) {
-                                    if(diseaseArray[k] != '' && diseaseArray[k] != 'not specified' && diseaseArray[k] != 'not provided') {
+                                    // relax the restriction to show all clinvar
+                                    //if(diseaseArray[k] != '' && diseaseArray[k] != 'not specified' && diseaseArray[k] != 'not provided') {
                                         if(index > 0) {
                                             diseaseTitle += '; ';
                                         }
@@ -37052,7 +44991,7 @@ var icn3d = (function (exports) {
                                         }
                                         diseaseTitle += diseaseArray[k] + '(' + sigArray[k] + ')';
                                         ++index;
-                                    }
+                                    //}
                                 }
                                 if(diseaseTitle != '') {
                                     if(diseaseCnt < shownResCnt) snpStr += resi2snp[i][j];
@@ -37125,6 +45064,7 @@ var icn3d = (function (exports) {
             }
             html += '</span>';
             html += '<br>';
+
             return html;
         }
         processSnpClinvar(data, chnid, chnidBase, bSnpOnly, bVirus) { let ic = this.icn3d; ic.icn3dui;
@@ -37158,7 +45098,7 @@ var icn3d = (function (exports) {
               let resiStr = snpStr.substr(0, snpStr.length - 3);
               let resi = Math.round(resiStr);
               snpStr.substr(snpStr.length - 3, 1);
-              let snpRes = snpStr.substr(snpStr.length - 1, 1);
+              let snpRes = snpStr.substr(snpStr.indexOf('>') + 1); //snpStr.substr(snpStr.length - 1, 1);
               //var rsnum = bSnpOnly ? '' : fieldArray[4];
               let rsnum = fieldArray[4];
               let clinAllele = bSnpOnly ? '' : fieldArray[5];
@@ -37229,7 +45169,7 @@ var icn3d = (function (exports) {
                 htmlClinvar2 += this.getSnpLine(1, 2, resi2snp, resi2rsnum, resi2clinAllele, resi2disease, resi2index, resi2sig, posarray, posClinArray, 1, chnid, true, bClinvar, undefined, bSnpOnly);
                 htmlClinvar += '</div>';
                 htmlClinvar2 += '</div>';
-                htmlClinvar3 += '</div>';
+                htmlClinvar3 += '</div>';          
                 $("#" + ic.pre + 'dt_clinvar_' + chnid).html(htmlClinvar);
                 $("#" + ic.pre + 'ov_clinvar_' + chnid).html(htmlClinvar2);
                 $("#" + ic.pre + 'tt_clinvar_' + chnid).html(htmlClinvar3);
@@ -37251,16 +45191,19 @@ var icn3d = (function (exports) {
             //var url = "https://www.ncbi.nlm.nih.gov/projects/SNP/beVarSearch_mt.cgi?appname=iCn3D&format=bed&report=pdb2bed&acc=" + chnidBase;
             //var url = "https://www.ncbi.nlm.nih.gov/Structure/icn3d/clinvar.txt";
             let url = "https://www.ncbi.nlm.nih.gov/Structure/vastdyn/vastdyn.cgi?chainid_clinvar=" + chnidBase;
+            if(ic.chainsGene[chnid] && ic.chainsGene[chnid].geneSymbol) {
+                url += "&gene=" + ic.chainsGene[chnid].geneSymbol;
+            }
             $.ajax({
               url: url,
               dataType: 'jsonp',
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               success: function(indata) {
                 if(indata && indata.data && indata.data.length > 0) {
                     let bSnpOnly = false;
-                    let data = indata;
+                    let data = indata;             
                     thisClass.processSnpClinvar(data, chnid, chnidBase, bSnpOnly);
                 }
                 else {
@@ -37300,7 +45243,7 @@ var icn3d = (function (exports) {
               dataType: 'jsonp', //'text',
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               success: function(data2) {
                 //ic.chainid2repgi = JSON.parse(data2);
                 //var gi = ic.chainid2repgi[chnidBase];
@@ -37336,6 +45279,7 @@ var icn3d = (function (exports) {
         showSnpPart2(chnid, chnidBase, gi) { let ic = this.icn3d; ic.icn3dui;
             let thisClass = this;
             if(gi !== undefined) {
+          /*      
                 let url3 = "https://www.ncbi.nlm.nih.gov/projects/SNP/beVarSearch.cgi?appname=iCn3D&format=bed&report=pdb2bed&connect=MSSNPSUBMISSION1&gi=" + gi;
 
                 $.ajax({
@@ -37343,20 +45287,24 @@ var icn3d = (function (exports) {
                   dataType: 'text',
                   cache: true,
                   tryCount : 0,
-                  retryLimit : 1,
+                  retryLimit : 0, //1
                   success: function(data3) {
                     if(data3) {
                         let bSnpOnly = true;
                         thisClass.processSnpClinvar(data3, chnid, chnidBase, bSnpOnly);
                     } //if(data3 != "") {
                     else {
+           */             
                         let url4 = "https://www.ncbi.nlm.nih.gov/Structure/vastdyn/vastdyn.cgi?chainid_snp=" + chnidBase;
+                        if(ic.chainsGene[chnid] && ic.chainsGene[chnid].geneSymbol) {
+                            url4 += "&gene=" + ic.chainsGene[chnid].geneSymbol;
+                        }
                         $.ajax({
                           url: url4,
                           dataType: 'jsonp', //'text',
                           cache: true,
                           tryCount : 0,
-                          retryLimit : 1,
+                          retryLimit : 0, //1
                           success: function(data4) {
                             if(data4 && data4.data && data4.data.length > 0) {
                                 let bSnpOnly = true;
@@ -37380,6 +45328,7 @@ var icn3d = (function (exports) {
                             return;
                           }
                         });
+             /*           
                     }
                     //if(ic.deferredSnp !== undefined) ic.deferredSnp.resolve();
                   },
@@ -37395,6 +45344,7 @@ var icn3d = (function (exports) {
                     return;
                   }
                 });
+            */    
             }
             else {
                 this.processNoSnp(chnid);
@@ -38996,6 +46946,8 @@ var icn3d = (function (exports) {
                //[id$= is expensive
                //if($("[id$=" + ic.pre + pickedResidue + "]").length !== 0) {
                  let atom = ic.firstAtomObjCls.getFirstCalphaAtomObj(ic.residues[pickedResidue]);
+                 if(!atom) continue;
+
                  let colorStr =(atom.color === undefined || atom.color.getHexString().toUpperCase() === 'FFFFFF') ? 'DDDDDD' : atom.color.getHexString();
                  let color =(atom.color !== undefined) ? colorStr : "CCCCCC";
                  // annotations will have their own color, only the chain will have the changed color
@@ -39410,8 +47362,12 @@ var icn3d = (function (exports) {
 
             for(let i in ic.chains) {
                ic.hAtoms = me.hashUtilsCls.unionHash(ic.hAtoms, ic.chains[i]);
-               ic.dAtoms = me.hashUtilsCls.unionHash(ic.dAtoms, ic.chains[i]);
+               //ic.dAtoms = me.hashUtilsCls.unionHash(ic.dAtoms, ic.chains[i]);
             }
+
+            ic.dAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+            ic.viewSelectionAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+            ic.ALTERNATE_STRUCTURE = -1;
         }
 
         //Select a chain with the chain id "chainid" in the sequence dialog and save it as a custom selection with the name "commandname".
@@ -39529,13 +47485,14 @@ var icn3d = (function (exports) {
         selectSideChains() { let  ic = this.icn3d, me = ic.icn3dui;
             let  currHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
 
-            let  nuclMainArray = ["C1'", "C1*", "C2'", "C2*", "C3'", "C3*", "C4'", "C4*", "C5'", "C5*", "O3'", "O3*", "O4'", "O4*", "O5'", "O5*", "P", "OP1", "O1P", "OP2", "O2P"];
+            //let  nuclMainArray = ["C1'", "C1*", "C2'", "C2*", "C3'", "C3*", "C4'", "C4*", "C5'", "C5*", "O3'", "O3*", "O4'", "O4*", "O5'", "O5*", "P", "OP1", "O1P", "OP2", "O2P"];
 
             ic.hAtoms = {};
             for(let i in currHAtoms) {
-                if((ic.proteins.hasOwnProperty(i) && ic.atoms[i].name !== "N" && ic.atoms[i].name !== "C" && ic.atoms[i].name !== "O"
-                  && !(ic.atoms[i].name === "CA" && ic.atoms[i].elem === "C") )
-                  ||(ic.nucleotides.hasOwnProperty(i) && nuclMainArray.indexOf(ic.atoms[i].name) === -1) ) {
+                if((ic.proteins.hasOwnProperty(i) && ic.atoms[i].name !== "N" && ic.atoms[i].name !== "H" 
+                  && ic.atoms[i].name !== "C" && ic.atoms[i].name !== "O"
+                  && !(ic.atoms[i].name === "CA" && ic.atoms[i].elem === "C") && ic.atoms[i].name !== "HA")
+                  ||(ic.nucleotides.hasOwnProperty(i) && me.parasCls.nuclMainArray.indexOf(ic.atoms[i].name) === -1) ) {
                     ic.hAtoms[i] = 1;
                 }
             }
@@ -39646,6 +47603,8 @@ var icn3d = (function (exports) {
             if(Object.keys(ic.hAtoms).length == 0) this.selectAll_base();
 
             ic.dAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+            ic.viewSelectionAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+            ic.ALTERNATE_STRUCTURE = -1;
 
             let  centerAtomsResults = ic.applyCenterCls.centerAtoms(me.hashUtilsCls.hash2Atoms(ic.dAtoms, ic.atoms));
             ic.maxD = centerAtomsResults.maxD;
@@ -39770,9 +47729,15 @@ var icn3d = (function (exports) {
           let  nameCommandArray = dataStr.trim().split('\n');
 
           for(let i = 0, il = nameCommandArray.length; i < il; ++i) {
-              let  nameCommand = nameCommandArray[i].split('\t');
-              let  name = nameCommand[0];
-              let  command = nameCommand[1];
+              //let  nameCommand = nameCommandArray[i].split('\t');
+              //let  name = nameCommand[0];
+              //let  command = nameCommand[1];
+
+              let  nameCommand = nameCommandArray[i].replace(/\t/g, ' ');
+              let pos1 = nameCommand.indexOf(' ');
+              
+              let  name = nameCommand.substr(0, pos1);
+              let  command = nameCommand.substr(pos1 + 1);
 
               let  pos = command.indexOf(' '); // select ...
 
@@ -40033,6 +47998,19 @@ var icn3d = (function (exports) {
               case 'proteins':
                   atoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.proteins);
                   if(Object.keys(ic.hAtoms).length < Object.keys(ic.proteins).length) ;
+
+                  // remove disulfide bonds
+                  if(style == 'nothing') {
+                    ic.opts["ssbonds"] = "no";
+                    ic.lines['ssbond'] = [];
+                    for(let i in atoms) {
+                        ic.atoms[i].style2 = 'nothing';
+                    }
+                  }
+                  else {
+                    ic.opts["ssbonds"] = "yes";
+                  }
+
                   break;
               case 'sidec':
                   atoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.sidec);
@@ -40043,6 +48021,9 @@ var icn3d = (function (exports) {
               case 'nucleotides':
                   atoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.nucleotides);
                   if(Object.keys(ic.hAtoms).length < Object.keys(ic.nucleotides).length) ;
+                  break;
+              case 'ntbase':
+                  atoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.ntbase);
                   break;
               case 'chemicals':
                   atoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.chemicals);
@@ -40055,7 +48036,7 @@ var icn3d = (function (exports) {
                   break;
           }
           // draw sidec separatedly
-          if(selectionType === 'sidec') {
+          if(selectionType === 'sidec' || selectionType === 'ntbase') {
               for(let i in atoms) {
                 ic.atoms[i].style2 = style;
               }
@@ -40107,10 +48088,12 @@ var icn3d = (function (exports) {
                let atom = ic.atoms[i];
                if(atom.colorSave !== undefined) {
                    atom.color = atom.colorSave.clone();
+                   ic.atomPrevColors[i] = atom.color;
                }
            }
-           ic.drawCls.draw();
+           
            ic.hlUpdateCls.changeSeqColor(Object.keys(ic.residues));
+           ic.drawCls.draw();
         }
     }
 
@@ -40171,6 +48154,14 @@ var icn3d = (function (exports) {
                 }
             }
 
+            if (options.ntbase !== undefined && options.ntbase !== 'nothing') {
+              selectedAtoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.ntbase);
+
+              for(let i in selectedAtoms) {
+                ic.atoms[i].style2 = options.ntbase.toLowerCase();
+              }
+            }
+
             if (options.chemicals !== undefined) {
                 selectedAtoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.chemicals);
                 for(let i in selectedAtoms) {
@@ -40201,6 +48192,7 @@ var icn3d = (function (exports) {
         }
 
         setBackground(color) {var ic = this.icn3d, me = ic.icn3dui;
+          
            ic.setOptionCls.setOption('background', color);
            me.htmlCls.clickMenuCls.setLogCmd('set background ' + color, true);
            //let titleColor =(color == 'black' || color == 'transparent') ? me.htmlCls.GREYD : 'black';
@@ -40692,11 +48684,15 @@ var icn3d = (function (exports) {
                  start = null; end = null;
               }
               if (atom.name === 'O3\'' || atom.name === 'O3*') start = atom;
-              if (atom.resn === '  A' || atom.resn === '  G' || atom.resn === ' DA' || atom.resn === ' DG') {
-                 if (atom.name === 'N1')  end = atom; //  N1(AG), N3(CTU)
-              } else if (atom.name === 'N3') {
+
+              if (atom.resn.trim() === 'A' || atom.resn.trim() === 'G' || atom.resn.trim() === 'DA' || atom.resn.trim() === 'DG') {
+                 //if (atom.name === 'N1')  end = atom; //  N1(AG), N3(CTU)
+                 if (atom.name === 'N9')  end = atom; //  N1(AG), N3(CTU)
+              //} else if (atom.name === 'N3') {
+              } else if (atom.name === 'N1') {
                  end = atom;
               }
+
               currentResi = atom.resi; currentChain = atom.chain;
            }
            if (start !== null && end !== null)
@@ -40799,7 +48795,7 @@ var icn3d = (function (exports) {
                 context.lineWidth = borderThickness;
 
                 if(bSchematic) {
-                    let r = width * 0.35;
+                    let r = width * 0.4; //width * 0.35;
                     this.circle(context, 0, 0, width, height, r);
                 }
                 else {
@@ -40869,7 +48865,7 @@ var icn3d = (function (exports) {
 
         circle(ctx, x, y, w, h, r) {
             ctx.beginPath();
-            ctx.arc(x+w/2, y+h/2, r, 0, 2*Math.PI, true);
+            ctx.arc(x+w/2, (y+h/2) * 0.9, r, 0, 2*Math.PI, true); // adjust the y by 0.9
             ctx.closePath();
             ctx.fill();
             ctx.stroke();
@@ -41158,7 +49154,9 @@ var icn3d = (function (exports) {
               // 14 styles: ribbon, strand, cylinder and plate, nucleotide cartoon, o3 trace, schematic, c alpha trace, b factor tube, lines, stick, ball and stick, sphere, dot, nothing
               let atomHash = ic.style2atoms[style];
               //var bPhosphorusOnly = me.utilsCls.isCalphaPhosOnly(me.hashUtilsCls.hash2Atoms(atomHash), "O3'", "O3*") || me.utilsCls.isCalphaPhosOnly(me.hashUtilsCls.hash2Atoms(atomHash), "P");
-              let bPhosphorusOnly = me.utilsCls.isCalphaPhosOnly(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms));
+              //let bPhosphorusOnly = me.utilsCls.isCalphaPhosOnly(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms));
+              let nucleotidesAtoms = me.hashUtilsCls.intHash(atomHash, ic.nucleotides);
+              let bPhosphorusOnly = me.utilsCls.isCalphaPhosOnly(me.hashUtilsCls.hash2Atoms(nucleotidesAtoms, ic.atoms));
 
               if(style === 'ribbon') {
               //if(style === 'ribbon' && (!bHighlight || (bHighlight && !bOnlySideChains))) {
@@ -41222,7 +49220,7 @@ var icn3d = (function (exports) {
               else if(style === 'custom tube') {
                 ic.tubeCls.createTube(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), 'CA', null, bHighlight, true, true);
               }
-              else if(style === 'lines') {
+              else if(style === 'lines' || style === 'lines2') {
                 if(bHighlight === 1) {
                     ic.stickCls.createStickRepresentation(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), ic.hlLineRadius, ic.hlLineRadius, undefined, bHighlight);
                 }
@@ -41232,7 +49230,7 @@ var icn3d = (function (exports) {
 
                 ic.lineCls.createConnCalphSidechain(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), style);
               }
-              else if(style === 'stick') {
+              else if(style === 'stick' || style === 'stick2') {
                 ic.stickCls.createStickRepresentation(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), ic.cylinderRadius, ic.cylinderRadius, undefined, bHighlight, undefined);
                 ic.lineCls.createConnCalphSidechain(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), style);
               }
@@ -41240,11 +49238,11 @@ var icn3d = (function (exports) {
                 atomHash = this.selectMainChainSubset(atomHash);
                 ic.stickCls.createStickRepresentation(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), ic.cylinderRadius, ic.cylinderRadius, undefined, bHighlight, undefined);
               }
-              else if(style === 'ball and stick') {
+              else if(style === 'ball and stick' || style === 'ball and stick2') {
                 ic.stickCls.createStickRepresentation(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), ic.cylinderRadius, ic.cylinderRadius * 0.5, ic.dotSphereScale, bHighlight, undefined);
                 ic.lineCls.createConnCalphSidechain(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), style);
               }
-              else if(style === 'sphere') {
+              else if(style === 'sphere' || style === 'sphere2') {
                 ic.sphereCls.createSphereRepresentation(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), ic.sphereRadius, undefined, undefined, bHighlight);
               }
               else if(style === 'dot') {
@@ -41902,8 +49900,9 @@ var icn3d = (function (exports) {
               let start, end;
 
               if(ic.bAlternate) {
-                  start = ic.ALTERNATE_STRUCTURE;
-                  end = ic.ALTERNATE_STRUCTURE + 1;
+                  let nStructures = structureArray.length;
+                  start = ic.ALTERNATE_STRUCTURE % nStructures;
+                  end = ic.ALTERNATE_STRUCTURE % nStructures + 1;
               }
               else {
                   start = 0;
@@ -42046,6 +50045,5319 @@ var icn3d = (function (exports) {
               } // for(let s = 0,
             } // if (options.ssbonds.toLowerCase() === 'yes'
         }
+    }
+
+    class VRButton {
+        constructor(icn3d) {
+            this.icn3d = icn3d;
+
+            //static xrSessionIsGranted = false;
+            this.xrSessionIsGranted = false;
+        }
+
+        //static createButton( renderer, options ) {
+        createButton( renderer, options ) { let ic = this.icn3d, me = ic.icn3dui;
+
+            if ( options ) {
+
+                console.error( 'THREE.VRButton: The "options" parameter has been removed. Please set the reference space type via renderer.xr.setReferenceSpaceType() instead.' );
+
+            }
+
+            const button = document.createElement( 'button' );
+
+            function showEnterVR( /*device*/ ) {
+
+                let currentSession = null;
+
+                async function onSessionStarted( session ) {
+
+                    session.addEventListener( 'end', onSessionEnded );
+
+                    await renderer.xr.setSession( session );
+                    button.textContent = 'EXIT VR';
+
+                    currentSession = session;
+
+                }
+
+                function onSessionEnded( /*event*/ ) {
+                    // the display is weird somehow
+                    // reset orientation after VR
+                    ic.transformCls.resetOrientation();
+                    //ic.transformCls.zoominSelection();
+                    ic.drawCls.draw();
+
+                    currentSession.removeEventListener( 'end', onSessionEnded );
+
+                    button.textContent = 'ENTER VR';
+
+                    currentSession = null;
+
+                }
+
+                //
+
+                button.style.display = '';
+
+                button.style.cursor = 'pointer';
+                button.style.left = 'calc(50% - 50px)';
+                button.style.width = '100px';
+
+                button.textContent = 'ENTER VR';
+
+                button.onmouseenter = function () {
+
+                    button.style.opacity = '1.0';
+
+                };
+
+                button.onmouseleave = function () {
+
+                    button.style.opacity = '0.8'; //'0.5';
+
+                };
+
+                button.onclick = function () {       
+                    // imposter didn't work well in VR
+                    ic.bImpo = false;
+                    //ic.bInstanced = false;
+                    
+                    ic.drawCls.draw();
+
+                    if ( currentSession === null ) {
+
+                        // WebXR's requestReferenceSpace only works if the corresponding feature
+                        // was requested at session creation time. For simplicity, just ask for
+                        // the interesting ones as optional features, but be aware that the
+                        // requestReferenceSpace call will fail if it turns out to be unavailable.
+                        // ('local' is always available for immersive sessions and doesn't need to
+                        // be requested separately.)
+
+                        const sessionInit = { optionalFeatures: [ 'local-floor', 'bounded-floor', 'hand-tracking', 'layers' ] };
+                        navigator.xr.requestSession( 'immersive-vr', sessionInit ).then( onSessionStarted );
+
+                    } else {
+
+                        currentSession.end();
+
+                    }
+
+                };
+
+            }
+
+            function disableButton() {
+
+                button.style.display = '';
+
+                button.style.cursor = 'auto';
+                button.style.left = 'calc(50% - 75px)';
+                button.style.width = '150px';
+
+                button.onmouseenter = null;
+                button.onmouseleave = null;
+
+                button.onclick = null;
+
+            }
+
+            function showWebXRNotFound() {
+
+                disableButton();
+
+                //button.textContent = 'VR NOT SUPPORTED';
+                button.style.display = 'none';
+
+            }
+
+            function showVRNotAllowed( exception ) {
+
+                disableButton();
+
+                console.warn( 'Exception when trying to call xr.isSessionSupported', exception );
+
+                //button.textContent = 'VR NOT ALLOWED';
+                button.style.display = 'none';
+
+            }
+
+            function stylizeElement( element ) {
+
+                element.style.position = 'absolute';
+                element.style.bottom = '20px';
+                element.style.padding = '12px 6px';
+                element.style.border = '1px solid #fff';
+                element.style.borderRadius = '4px';
+                element.style.background = '#000'; //'rgba(0,0,0,0.5)';
+                element.style.color = '#f8b84e'; //'#1c94c4'; //'#fff';
+                element.style.font = 'bold 13px sans-serif';
+                element.style.textAlign = 'center';
+                element.style.opacity = '0.8';
+                element.style.outline = 'none';
+                element.style.zIndex = '999';
+
+            }
+
+            let thisClass = this;
+
+            if ( 'xr' in navigator ) {
+
+                button.id = me.pre + 'VRButton'; //'VRButton';
+                button.style.display = 'none';
+
+                stylizeElement( button );
+
+                navigator.xr.isSessionSupported( 'immersive-vr' ).then( function ( supported ) {
+
+                    supported ? showEnterVR() : showWebXRNotFound();
+                    
+                    //if ( supported && VRButton.xrSessionIsGranted ) {
+                    if ( supported && thisClass.xrSessionIsGranted ) {
+
+                        button.click();
+
+                    }
+
+                } ).catch( showVRNotAllowed );
+
+                return button;
+
+            } else {
+    /*
+                const message = document.createElement( 'a' );
+
+                if ( window.isSecureContext === false ) {
+
+                    message.href = document.location.href.replace( /^http:/, 'https:' );
+                    message.innerHTML = 'WEBXR NEEDS HTTPS'; // TODO Improve message
+
+                } else {
+
+                    message.href = 'https://immersiveweb.dev/';
+                    message.innerHTML = 'WEBXR NOT AVAILABLE';
+
+                }
+
+                message.style.left = 'calc(50% - 90px)';
+                message.style.width = '180px';
+                message.style.textDecoration = 'none';
+
+                stylizeElement( message );
+
+                return message;
+    */
+                const message = document.createElement( 'span' );
+                return message;
+            }
+
+        }
+
+        //static xrSessionIsGranted = false;
+
+        //static registerSessionGrantedListener() {
+        registerSessionGrantedListener() {
+
+            if ( 'xr' in navigator ) {
+
+                navigator.xr.addEventListener( 'sessiongranted', () => {
+
+                    //VRButton.xrSessionIsGranted = true;
+                    this.xrSessionIsGranted = true;
+
+                } );
+
+            }
+
+        }
+
+    }
+
+    /*
+    import {
+        AnimationClip,
+        Bone,
+        Box3,
+        BufferAttribute,
+        BufferGeometry,
+        ClampToEdgeWrapping,
+        Color,
+        DirectionalLight,
+        DoubleSide,
+        FileLoader,
+        FrontSide,
+        Group,
+        ImageBitmapLoader,
+        InterleavedBuffer,
+        InterleavedBufferAttribute,
+        Interpolant,
+        InterpolateDiscrete,
+        InterpolateLinear,
+        Line,
+        LineBasicMaterial,
+        LineLoop,
+        LineSegments,
+        LinearFilter,
+        LinearMipmapLinearFilter,
+        LinearMipmapNearestFilter,
+        Loader,
+        LoaderUtils,
+        Material,
+        MathUtils,
+        Matrix4,
+        Mesh,
+        MeshBasicMaterial,
+        MeshPhysicalMaterial,
+        MeshStandardMaterial,
+        MirroredRepeatWrapping,
+        NearestFilter,
+        NearestMipmapLinearFilter,
+        NearestMipmapNearestFilter,
+        NumberKeyframeTrack,
+        Object3D,
+        OrthographicCamera,
+        PerspectiveCamera,
+        PointLight,
+        Points,
+        PointsMaterial,
+        PropertyBinding,
+        Quaternion,
+        QuaternionKeyframeTrack,
+        RepeatWrapping,
+        Skeleton,
+        SkinnedMesh,
+        Sphere,
+        SpotLight,
+        TangentSpaceNormalMap,
+        Texture,
+        TextureLoader,
+        TriangleFanDrawMode,
+        TriangleStripDrawMode,
+        Vector2,
+        Vector3,
+        VectorKeyframeTrack,
+        sRGBEncoding
+    } from 'three';
+    */
+
+    class GLTFLoader extends THREE.Loader {
+
+        constructor( manager ) {
+
+            super( manager );
+
+            this.dracoLoader = null;
+            this.ktx2Loader = null;
+            this.meshoptDecoder = null;
+
+            this.pluginCallbacks = [];
+
+            this.register( function ( parser ) {
+
+                return new GLTFMaterialsClearcoatExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFTextureBasisUExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFTextureWebPExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFMaterialsSheenExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFMaterialsTransmissionExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFMaterialsVolumeExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFMaterialsIorExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFMaterialsSpecularExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFLightsExtension( parser );
+
+            } );
+
+            this.register( function ( parser ) {
+
+                return new GLTFMeshoptCompression( parser );
+
+            } );
+
+        }
+
+        load( url, onLoad, onProgress, onError ) {
+
+            const scope = this;
+
+            let resourcePath;
+
+            if ( this.resourcePath !== '' ) {
+
+                resourcePath = this.resourcePath;
+
+            } else if ( this.path !== '' ) {
+
+                resourcePath = this.path;
+
+            } else {
+
+                resourcePath = LoaderUtils.extractUrlBase( url );
+
+            }
+
+            // Tells the LoadingManager to track an extra item, which resolves after
+            // the model is fully loaded. This means the count of items loaded will
+            // be incorrect, but ensures manager.onLoad() does not fire early.
+            this.manager.itemStart( url );
+
+            const _onError = function ( e ) {
+
+                if ( onError ) {
+
+                    onError( e );
+
+                } else {
+
+                    console.error( e );
+
+                }
+
+                scope.manager.itemError( url );
+                scope.manager.itemEnd( url );
+
+            };
+
+            const loader = new FileLoader( this.manager );
+
+            loader.setPath( this.path );
+            loader.setResponseType( 'arraybuffer' );
+            loader.setRequestHeader( this.requestHeader );
+            loader.setWithCredentials( this.withCredentials );
+
+            loader.load( url, function ( data ) {
+
+                try {
+
+                    scope.parse( data, resourcePath, function ( gltf ) {
+
+                        onLoad( gltf );
+
+                        scope.manager.itemEnd( url );
+
+                    }, _onError );
+
+                } catch ( e ) {
+
+                    _onError( e );
+
+                }
+
+            }, onProgress, _onError );
+
+        }
+
+        setDRACOLoader( dracoLoader ) {
+
+            this.dracoLoader = dracoLoader;
+            return this;
+
+        }
+
+        setDDSLoader() {
+
+            throw new Error(
+
+                'THREE.GLTFLoader: "MSFT_texture_dds" no longer supported. Please update to "KHR_texture_basisu".'
+
+            );
+
+        }
+
+        setKTX2Loader( ktx2Loader ) {
+
+            this.ktx2Loader = ktx2Loader;
+            return this;
+
+        }
+
+        setMeshoptDecoder( meshoptDecoder ) {
+
+            this.meshoptDecoder = meshoptDecoder;
+            return this;
+
+        }
+
+        register( callback ) {
+
+            if ( this.pluginCallbacks.indexOf( callback ) === - 1 ) {
+
+                this.pluginCallbacks.push( callback );
+
+            }
+
+            return this;
+
+        }
+
+        unregister( callback ) {
+
+            if ( this.pluginCallbacks.indexOf( callback ) !== - 1 ) {
+
+                this.pluginCallbacks.splice( this.pluginCallbacks.indexOf( callback ), 1 );
+
+            }
+
+            return this;
+
+        }
+
+        parse( data, path, onLoad, onError ) {
+
+            let content;
+            const extensions = {};
+            const plugins = {};
+
+            if ( typeof data === 'string' ) {
+
+                content = data;
+
+            } else {
+
+                const magic = LoaderUtils.decodeText( new Uint8Array( data, 0, 4 ) );
+
+                if ( magic === BINARY_EXTENSION_HEADER_MAGIC ) {
+
+                    try {
+
+                        extensions[ EXTENSIONS.KHR_BINARY_GLTF ] = new GLTFBinaryExtension( data );
+
+                    } catch ( error ) {
+
+                        if ( onError ) onError( error );
+                        return;
+
+                    }
+
+                    content = extensions[ EXTENSIONS.KHR_BINARY_GLTF ].content;
+
+                } else {
+
+                    content = LoaderUtils.decodeText( new Uint8Array( data ) );
+
+                }
+
+            }
+
+            const json = JSON.parse( content );
+
+            if ( json.asset === undefined || json.asset.version[ 0 ] < 2 ) {
+
+                if ( onError ) onError( new Error( 'THREE.GLTFLoader: Unsupported asset. glTF versions >=2.0 are supported.' ) );
+                return;
+
+            }
+
+            const parser = new GLTFParser( json, {
+
+                path: path || this.resourcePath || '',
+                crossOrigin: this.crossOrigin,
+                requestHeader: this.requestHeader,
+                manager: this.manager,
+                ktx2Loader: this.ktx2Loader,
+                meshoptDecoder: this.meshoptDecoder
+
+            } );
+
+            parser.fileLoader.setRequestHeader( this.requestHeader );
+
+            for ( let i = 0; i < this.pluginCallbacks.length; i ++ ) {
+
+                const plugin = this.pluginCallbacks[ i ]( parser );
+                plugins[ plugin.name ] = plugin;
+
+                // Workaround to avoid determining as unknown extension
+                // in addUnknownExtensionsToUserData().
+                // Remove this workaround if we move all the existing
+                // extension handlers to plugin system
+                extensions[ plugin.name ] = true;
+
+            }
+
+            if ( json.extensionsUsed ) {
+
+                for ( let i = 0; i < json.extensionsUsed.length; ++ i ) {
+
+                    const extensionName = json.extensionsUsed[ i ];
+                    const extensionsRequired = json.extensionsRequired || [];
+
+                    switch ( extensionName ) {
+
+                        case EXTENSIONS.KHR_MATERIALS_UNLIT:
+                            extensions[ extensionName ] = new GLTFMaterialsUnlitExtension();
+                            break;
+
+                        case EXTENSIONS.KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS:
+                            extensions[ extensionName ] = new GLTFMaterialsPbrSpecularGlossinessExtension();
+                            break;
+
+                        case EXTENSIONS.KHR_DRACO_MESH_COMPRESSION:
+                            extensions[ extensionName ] = new GLTFDracoMeshCompressionExtension( json, this.dracoLoader );
+                            break;
+
+                        case EXTENSIONS.KHR_TEXTURE_TRANSFORM:
+                            extensions[ extensionName ] = new GLTFTextureTransformExtension();
+                            break;
+
+                        case EXTENSIONS.KHR_MESH_QUANTIZATION:
+                            extensions[ extensionName ] = new GLTFMeshQuantizationExtension();
+                            break;
+
+                        default:
+
+                            if ( extensionsRequired.indexOf( extensionName ) >= 0 && plugins[ extensionName ] === undefined ) {
+
+                                console.warn( 'THREE.GLTFLoader: Unknown extension "' + extensionName + '".' );
+
+                            }
+
+                    }
+
+                }
+
+            }
+
+            parser.setExtensions( extensions );
+            parser.setPlugins( plugins );
+            parser.parse( onLoad, onError );
+
+        }
+
+        parseAsync( data, path ) {
+
+            const scope = this;
+
+            return new Promise( function ( resolve, reject ) {
+
+                scope.parse( data, path, resolve, reject );
+
+            } );
+
+        }
+
+    }
+
+    /* GLTFREGISTRY */
+
+    function GLTFRegistry() {
+
+        let objects = {};
+
+        return  {
+
+            get: function ( key ) {
+
+                return objects[ key ];
+
+            },
+
+            add: function ( key, object ) {
+
+                objects[ key ] = object;
+
+            },
+
+            remove: function ( key ) {
+
+                delete objects[ key ];
+
+            },
+
+            removeAll: function () {
+
+                objects = {};
+
+            }
+
+        };
+
+    }
+
+    /*********************************/
+    /********** EXTENSIONS ***********/
+    /*********************************/
+
+    const EXTENSIONS = {
+        KHR_BINARY_GLTF: 'KHR_binary_glTF',
+        KHR_DRACO_MESH_COMPRESSION: 'KHR_draco_mesh_compression',
+        KHR_LIGHTS_PUNCTUAL: 'KHR_lights_punctual',
+        KHR_MATERIALS_CLEARCOAT: 'KHR_materials_clearcoat',
+        KHR_MATERIALS_IOR: 'KHR_materials_ior',
+        KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS: 'KHR_materials_pbrSpecularGlossiness',
+        KHR_MATERIALS_SHEEN: 'KHR_materials_sheen',
+        KHR_MATERIALS_SPECULAR: 'KHR_materials_specular',
+        KHR_MATERIALS_TRANSMISSION: 'KHR_materials_transmission',
+        KHR_MATERIALS_UNLIT: 'KHR_materials_unlit',
+        KHR_MATERIALS_VOLUME: 'KHR_materials_volume',
+        KHR_TEXTURE_BASISU: 'KHR_texture_basisu',
+        KHR_TEXTURE_TRANSFORM: 'KHR_texture_transform',
+        KHR_MESH_QUANTIZATION: 'KHR_mesh_quantization',
+        EXT_TEXTURE_WEBP: 'EXT_texture_webp',
+        EXT_MESHOPT_COMPRESSION: 'EXT_meshopt_compression'
+    };
+
+    /**
+     * Punctual Lights Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_lights_punctual
+     */
+    class GLTFLightsExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_LIGHTS_PUNCTUAL;
+
+            // Object3D instance caches
+            this.cache = { refs: {}, uses: {} };
+
+        }
+
+        _markDefs() {
+
+            const parser = this.parser;
+            const nodeDefs = this.parser.json.nodes || [];
+
+            for ( let nodeIndex = 0, nodeLength = nodeDefs.length; nodeIndex < nodeLength; nodeIndex ++ ) {
+
+                const nodeDef = nodeDefs[ nodeIndex ];
+
+                if ( nodeDef.extensions
+                        && nodeDef.extensions[ this.name ]
+                        && nodeDef.extensions[ this.name ].light !== undefined ) {
+
+                    parser._addNodeRef( this.cache, nodeDef.extensions[ this.name ].light );
+
+                }
+
+            }
+
+        }
+
+        _loadLight( lightIndex ) {
+
+            const parser = this.parser;
+            const cacheKey = 'light:' + lightIndex;
+            let dependency = parser.cache.get( cacheKey );
+
+            if ( dependency ) return dependency;
+
+            const json = parser.json;
+            const extensions = ( json.extensions && json.extensions[ this.name ] ) || {};
+            const lightDefs = extensions.lights || [];
+            const lightDef = lightDefs[ lightIndex ];
+            let lightNode;
+
+            const color = new Color( 0xffffff );
+
+            if ( lightDef.color !== undefined ) color.fromArray( lightDef.color );
+
+            const range = lightDef.range !== undefined ? lightDef.range : 0;
+
+            switch ( lightDef.type ) {
+
+                case 'directional':
+                    lightNode = new DirectionalLight( color );
+                    lightNode.target.position.set( 0, 0, - 1 );
+                    lightNode.add( lightNode.target );
+                    break;
+
+                case 'point':
+                    lightNode = new PointLight( color );
+                    lightNode.distance = range;
+                    break;
+
+                case 'spot':
+                    lightNode = new SpotLight( color );
+                    lightNode.distance = range;
+                    // Handle spotlight properties.
+                    lightDef.spot = lightDef.spot || {};
+                    lightDef.spot.innerConeAngle = lightDef.spot.innerConeAngle !== undefined ? lightDef.spot.innerConeAngle : 0;
+                    lightDef.spot.outerConeAngle = lightDef.spot.outerConeAngle !== undefined ? lightDef.spot.outerConeAngle : Math.PI / 4.0;
+                    lightNode.angle = lightDef.spot.outerConeAngle;
+                    lightNode.penumbra = 1.0 - lightDef.spot.innerConeAngle / lightDef.spot.outerConeAngle;
+                    lightNode.target.position.set( 0, 0, - 1 );
+                    lightNode.add( lightNode.target );
+                    break;
+
+                default:
+                    throw new Error( 'THREE.GLTFLoader: Unexpected light type: ' + lightDef.type );
+
+            }
+
+            // Some lights (e.g. spot) default to a position other than the origin. Reset the position
+            // here, because node-level parsing will only override position if explicitly specified.
+            lightNode.position.set( 0, 0, 0 );
+
+            lightNode.decay = 2;
+
+            if ( lightDef.intensity !== undefined ) lightNode.intensity = lightDef.intensity;
+
+            lightNode.name = parser.createUniqueName( lightDef.name || ( 'light_' + lightIndex ) );
+
+            dependency = Promise.resolve( lightNode );
+
+            parser.cache.add( cacheKey, dependency );
+
+            return dependency;
+
+        }
+
+        createNodeAttachment( nodeIndex ) {
+
+            const self = this;
+            const parser = this.parser;
+            const json = parser.json;
+            const nodeDef = json.nodes[ nodeIndex ];
+            const lightDef = ( nodeDef.extensions && nodeDef.extensions[ this.name ] ) || {};
+            const lightIndex = lightDef.light;
+
+            if ( lightIndex === undefined ) return null;
+
+            return this._loadLight( lightIndex ).then( function ( light ) {
+
+                return parser._getNodeRef( self.cache, lightIndex, light );
+
+            } );
+
+        }
+
+    }
+
+    /**
+     * Unlit Materials Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_materials_unlit
+     */
+    class GLTFMaterialsUnlitExtension {
+
+        constructor() {
+
+            this.name = EXTENSIONS.KHR_MATERIALS_UNLIT;
+
+        }
+
+        getMaterialType() {
+
+            return MeshBasicMaterial;
+
+        }
+
+        extendParams( materialParams, materialDef, parser ) {
+
+            const pending = [];
+
+            materialParams.color = new Color( 1.0, 1.0, 1.0 );
+            materialParams.opacity = 1.0;
+
+            const metallicRoughness = materialDef.pbrMetallicRoughness;
+
+            if ( metallicRoughness ) {
+
+                if ( Array.isArray( metallicRoughness.baseColorFactor ) ) {
+
+                    const array = metallicRoughness.baseColorFactor;
+
+                    materialParams.color.fromArray( array );
+                    materialParams.opacity = array[ 3 ];
+
+                }
+
+                if ( metallicRoughness.baseColorTexture !== undefined ) {
+
+                    pending.push( parser.assignTexture( materialParams, 'map', metallicRoughness.baseColorTexture, sRGBEncoding ) );
+
+                }
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+    }
+
+    /**
+     * Clearcoat Materials Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_materials_clearcoat
+     */
+    class GLTFMaterialsClearcoatExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_MATERIALS_CLEARCOAT;
+
+        }
+
+        getMaterialType( materialIndex ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) return null;
+
+            return MeshPhysicalMaterial;
+
+        }
+
+        extendMaterialParams( materialIndex, materialParams ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) {
+
+                return Promise.resolve();
+
+            }
+
+            const pending = [];
+
+            const extension = materialDef.extensions[ this.name ];
+
+            if ( extension.clearcoatFactor !== undefined ) {
+
+                materialParams.clearcoat = extension.clearcoatFactor;
+
+            }
+
+            if ( extension.clearcoatTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'clearcoatMap', extension.clearcoatTexture ) );
+
+            }
+
+            if ( extension.clearcoatRoughnessFactor !== undefined ) {
+
+                materialParams.clearcoatRoughness = extension.clearcoatRoughnessFactor;
+
+            }
+
+            if ( extension.clearcoatRoughnessTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'clearcoatRoughnessMap', extension.clearcoatRoughnessTexture ) );
+
+            }
+
+            if ( extension.clearcoatNormalTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'clearcoatNormalMap', extension.clearcoatNormalTexture ) );
+
+                if ( extension.clearcoatNormalTexture.scale !== undefined ) {
+
+                    const scale = extension.clearcoatNormalTexture.scale;
+
+                    materialParams.clearcoatNormalScale = new Vector2( scale, scale );
+
+                }
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+    }
+
+    /**
+     * Sheen Materials Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Khronos/KHR_materials_sheen
+     */
+    class GLTFMaterialsSheenExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_MATERIALS_SHEEN;
+
+        }
+
+        getMaterialType( materialIndex ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) return null;
+
+            return MeshPhysicalMaterial;
+
+        }
+
+        extendMaterialParams( materialIndex, materialParams ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) {
+
+                return Promise.resolve();
+
+            }
+
+            const pending = [];
+
+            materialParams.sheenColor = new Color( 0, 0, 0 );
+            materialParams.sheenRoughness = 0;
+            materialParams.sheen = 1;
+
+            const extension = materialDef.extensions[ this.name ];
+
+            if ( extension.sheenColorFactor !== undefined ) {
+
+                materialParams.sheenColor.fromArray( extension.sheenColorFactor );
+
+            }
+
+            if ( extension.sheenRoughnessFactor !== undefined ) {
+
+                materialParams.sheenRoughness = extension.sheenRoughnessFactor;
+
+            }
+
+            if ( extension.sheenColorTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'sheenColorMap', extension.sheenColorTexture, sRGBEncoding ) );
+
+            }
+
+            if ( extension.sheenRoughnessTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'sheenRoughnessMap', extension.sheenRoughnessTexture ) );
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+    }
+
+    /**
+     * Transmission Materials Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_materials_transmission
+     * Draft: https://github.com/KhronosGroup/glTF/pull/1698
+     */
+    class GLTFMaterialsTransmissionExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_MATERIALS_TRANSMISSION;
+
+        }
+
+        getMaterialType( materialIndex ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) return null;
+
+            return MeshPhysicalMaterial;
+
+        }
+
+        extendMaterialParams( materialIndex, materialParams ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) {
+
+                return Promise.resolve();
+
+            }
+
+            const pending = [];
+
+            const extension = materialDef.extensions[ this.name ];
+
+            if ( extension.transmissionFactor !== undefined ) {
+
+                materialParams.transmission = extension.transmissionFactor;
+
+            }
+
+            if ( extension.transmissionTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'transmissionMap', extension.transmissionTexture ) );
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+    }
+
+    /**
+     * Materials Volume Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_materials_volume
+     */
+    class GLTFMaterialsVolumeExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_MATERIALS_VOLUME;
+
+        }
+
+        getMaterialType( materialIndex ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) return null;
+
+            return MeshPhysicalMaterial;
+
+        }
+
+        extendMaterialParams( materialIndex, materialParams ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) {
+
+                return Promise.resolve();
+
+            }
+
+            const pending = [];
+
+            const extension = materialDef.extensions[ this.name ];
+
+            materialParams.thickness = extension.thicknessFactor !== undefined ? extension.thicknessFactor : 0;
+
+            if ( extension.thicknessTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'thicknessMap', extension.thicknessTexture ) );
+
+            }
+
+            materialParams.attenuationDistance = extension.attenuationDistance || 0;
+
+            const colorArray = extension.attenuationColor || [ 1, 1, 1 ];
+            materialParams.attenuationColor = new Color( colorArray[ 0 ], colorArray[ 1 ], colorArray[ 2 ] );
+
+            return Promise.all( pending );
+
+        }
+
+    }
+
+    /**
+     * Materials ior Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_materials_ior
+     */
+    class GLTFMaterialsIorExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_MATERIALS_IOR;
+
+        }
+
+        getMaterialType( materialIndex ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) return null;
+
+            return MeshPhysicalMaterial;
+
+        }
+
+        extendMaterialParams( materialIndex, materialParams ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) {
+
+                return Promise.resolve();
+
+            }
+
+            const extension = materialDef.extensions[ this.name ];
+
+            materialParams.ior = extension.ior !== undefined ? extension.ior : 1.5;
+
+            return Promise.resolve();
+
+        }
+
+    }
+
+    /**
+     * Materials specular Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_materials_specular
+     */
+    class GLTFMaterialsSpecularExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_MATERIALS_SPECULAR;
+
+        }
+
+        getMaterialType( materialIndex ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) return null;
+
+            return MeshPhysicalMaterial;
+
+        }
+
+        extendMaterialParams( materialIndex, materialParams ) {
+
+            const parser = this.parser;
+            const materialDef = parser.json.materials[ materialIndex ];
+
+            if ( ! materialDef.extensions || ! materialDef.extensions[ this.name ] ) {
+
+                return Promise.resolve();
+
+            }
+
+            const pending = [];
+
+            const extension = materialDef.extensions[ this.name ];
+
+            materialParams.specularIntensity = extension.specularFactor !== undefined ? extension.specularFactor : 1.0;
+
+            if ( extension.specularTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'specularIntensityMap', extension.specularTexture ) );
+
+            }
+
+            const colorArray = extension.specularColorFactor || [ 1, 1, 1 ];
+            materialParams.specularColor = new Color( colorArray[ 0 ], colorArray[ 1 ], colorArray[ 2 ] );
+
+            if ( extension.specularColorTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'specularColorMap', extension.specularColorTexture, sRGBEncoding ) );
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+    }
+
+    /**
+     * BasisU Texture Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_texture_basisu
+     */
+    class GLTFTextureBasisUExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.KHR_TEXTURE_BASISU;
+
+        }
+
+        loadTexture( textureIndex ) {
+
+            const parser = this.parser;
+            const json = parser.json;
+
+            const textureDef = json.textures[ textureIndex ];
+
+            if ( ! textureDef.extensions || ! textureDef.extensions[ this.name ] ) {
+
+                return null;
+
+            }
+
+            const extension = textureDef.extensions[ this.name ];
+            const loader = parser.options.ktx2Loader;
+
+            if ( ! loader ) {
+
+                if ( json.extensionsRequired && json.extensionsRequired.indexOf( this.name ) >= 0 ) {
+
+                    throw new Error( 'THREE.GLTFLoader: setKTX2Loader must be called before loading KTX2 textures' );
+
+                } else {
+
+                    // Assumes that the extension is optional and that a fallback texture is present
+                    return null;
+
+                }
+
+            }
+
+            return parser.loadTextureImage( textureIndex, extension.source, loader );
+
+        }
+
+    }
+
+    /**
+     * WebP Texture Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Vendor/EXT_texture_webp
+     */
+    class GLTFTextureWebPExtension {
+
+        constructor( parser ) {
+
+            this.parser = parser;
+            this.name = EXTENSIONS.EXT_TEXTURE_WEBP;
+            this.isSupported = null;
+
+        }
+
+        loadTexture( textureIndex ) {
+
+            const name = this.name;
+            const parser = this.parser;
+            const json = parser.json;
+
+            const textureDef = json.textures[ textureIndex ];
+
+            if ( ! textureDef.extensions || ! textureDef.extensions[ name ] ) {
+
+                return null;
+
+            }
+
+            const extension = textureDef.extensions[ name ];
+            const source = json.images[ extension.source ];
+
+            let loader = parser.textureLoader;
+            if ( source.uri ) {
+
+                const handler = parser.options.manager.getHandler( source.uri );
+                if ( handler !== null ) loader = handler;
+
+            }
+
+            return this.detectSupport().then( function ( isSupported ) {
+
+                if ( isSupported ) return parser.loadTextureImage( textureIndex, extension.source, loader );
+
+                if ( json.extensionsRequired && json.extensionsRequired.indexOf( name ) >= 0 ) {
+
+                    throw new Error( 'THREE.GLTFLoader: WebP required by asset but unsupported.' );
+
+                }
+
+                // Fall back to PNG or JPEG.
+                return parser.loadTexture( textureIndex );
+
+            } );
+
+        }
+
+        detectSupport() {
+
+            if ( ! this.isSupported ) {
+
+                this.isSupported = new Promise( function ( resolve ) {
+
+                    const image = new Image();
+
+                    // Lossy test image. Support for lossy images doesn't guarantee support for all
+                    // WebP images, unfortunately.
+                    image.src = 'data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA';
+
+                    image.onload = image.onerror = function () {
+
+                        resolve( image.height === 1 );
+
+                    };
+
+                } );
+
+            }
+
+            return this.isSupported;
+
+        }
+
+    }
+
+    /**
+     * meshopt BufferView Compression Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Vendor/EXT_meshopt_compression
+     */
+    class GLTFMeshoptCompression {
+
+        constructor( parser ) {
+
+            this.name = EXTENSIONS.EXT_MESHOPT_COMPRESSION;
+            this.parser = parser;
+
+        }
+
+        loadBufferView( index ) {
+
+            const json = this.parser.json;
+            const bufferView = json.bufferViews[ index ];
+
+            if ( bufferView.extensions && bufferView.extensions[ this.name ] ) {
+
+                const extensionDef = bufferView.extensions[ this.name ];
+
+                const buffer = this.parser.getDependency( 'buffer', extensionDef.buffer );
+                const decoder = this.parser.options.meshoptDecoder;
+
+                if ( ! decoder || ! decoder.supported ) {
+
+                    if ( json.extensionsRequired && json.extensionsRequired.indexOf( this.name ) >= 0 ) {
+
+                        throw new Error( 'THREE.GLTFLoader: setMeshoptDecoder must be called before loading compressed files' );
+
+                    } else {
+
+                        // Assumes that the extension is optional and that fallback buffer data is present
+                        return null;
+
+                    }
+
+                }
+
+                return Promise.all( [ buffer, decoder.ready ] ).then( function ( res ) {
+
+                    const byteOffset = extensionDef.byteOffset || 0;
+                    const byteLength = extensionDef.byteLength || 0;
+
+                    const count = extensionDef.count;
+                    const stride = extensionDef.byteStride;
+
+                    const result = new ArrayBuffer( count * stride );
+                    const source = new Uint8Array( res[ 0 ], byteOffset, byteLength );
+
+                    decoder.decodeGltfBuffer( new Uint8Array( result ), count, stride, source, extensionDef.mode, extensionDef.filter );
+                    return result;
+
+                } );
+
+            } else {
+
+                return null;
+
+            }
+
+        }
+
+    }
+
+    /* BINARY EXTENSION */
+    const BINARY_EXTENSION_HEADER_MAGIC = 'glTF';
+    const BINARY_EXTENSION_HEADER_LENGTH = 12;
+    const BINARY_EXTENSION_CHUNK_TYPES = { JSON: 0x4E4F534A, BIN: 0x004E4942 };
+
+    class GLTFBinaryExtension {
+
+        constructor( data ) {
+
+            this.name = EXTENSIONS.KHR_BINARY_GLTF;
+            this.content = null;
+            this.body = null;
+
+            const headerView = new DataView( data, 0, BINARY_EXTENSION_HEADER_LENGTH );
+
+            this.header = {
+                magic: LoaderUtils.decodeText( new Uint8Array( data.slice( 0, 4 ) ) ),
+                version: headerView.getUint32( 4, true ),
+                length: headerView.getUint32( 8, true )
+            };
+
+            if ( this.header.magic !== BINARY_EXTENSION_HEADER_MAGIC ) {
+
+                throw new Error( 'THREE.GLTFLoader: Unsupported glTF-Binary header.' );
+
+            } else if ( this.header.version < 2.0 ) {
+
+                throw new Error( 'THREE.GLTFLoader: Legacy binary file detected.' );
+
+            }
+
+            const chunkContentsLength = this.header.length - BINARY_EXTENSION_HEADER_LENGTH;
+            const chunkView = new DataView( data, BINARY_EXTENSION_HEADER_LENGTH );
+            let chunkIndex = 0;
+
+            while ( chunkIndex < chunkContentsLength ) {
+
+                const chunkLength = chunkView.getUint32( chunkIndex, true );
+                chunkIndex += 4;
+
+                const chunkType = chunkView.getUint32( chunkIndex, true );
+                chunkIndex += 4;
+
+                if ( chunkType === BINARY_EXTENSION_CHUNK_TYPES.JSON ) {
+
+                    const contentArray = new Uint8Array( data, BINARY_EXTENSION_HEADER_LENGTH + chunkIndex, chunkLength );
+                    this.content = LoaderUtils.decodeText( contentArray );
+
+                } else if ( chunkType === BINARY_EXTENSION_CHUNK_TYPES.BIN ) {
+
+                    const byteOffset = BINARY_EXTENSION_HEADER_LENGTH + chunkIndex;
+                    this.body = data.slice( byteOffset, byteOffset + chunkLength );
+
+                }
+
+                // Clients must ignore chunks with unknown types.
+
+                chunkIndex += chunkLength;
+
+            }
+
+            if ( this.content === null ) {
+
+                throw new Error( 'THREE.GLTFLoader: JSON content not found.' );
+
+            }
+
+        }
+
+    }
+
+    /**
+     * DRACO Mesh Compression Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_draco_mesh_compression
+     */
+    class GLTFDracoMeshCompressionExtension {
+
+        constructor( json, dracoLoader ) {
+
+            if ( ! dracoLoader ) {
+
+                throw new Error( 'THREE.GLTFLoader: No DRACOLoader instance provided.' );
+
+            }
+
+            this.name = EXTENSIONS.KHR_DRACO_MESH_COMPRESSION;
+            this.json = json;
+            this.dracoLoader = dracoLoader;
+            this.dracoLoader.preload();
+
+        }
+
+        decodePrimitive( primitive, parser ) {
+
+            const json = this.json;
+            const dracoLoader = this.dracoLoader;
+            const bufferViewIndex = primitive.extensions[ this.name ].bufferView;
+            const gltfAttributeMap = primitive.extensions[ this.name ].attributes;
+            const threeAttributeMap = {};
+            const attributeNormalizedMap = {};
+            const attributeTypeMap = {};
+
+            for ( const attributeName in gltfAttributeMap ) {
+
+                const threeAttributeName = ATTRIBUTES[ attributeName ] || attributeName.toLowerCase();
+
+                threeAttributeMap[ threeAttributeName ] = gltfAttributeMap[ attributeName ];
+
+            }
+
+            for ( const attributeName in primitive.attributes ) {
+
+                const threeAttributeName = ATTRIBUTES[ attributeName ] || attributeName.toLowerCase();
+
+                if ( gltfAttributeMap[ attributeName ] !== undefined ) {
+
+                    const accessorDef = json.accessors[ primitive.attributes[ attributeName ] ];
+                    const componentType = WEBGL_COMPONENT_TYPES[ accessorDef.componentType ];
+
+                    attributeTypeMap[ threeAttributeName ] = componentType;
+                    attributeNormalizedMap[ threeAttributeName ] = accessorDef.normalized === true;
+
+                }
+
+            }
+
+            return parser.getDependency( 'bufferView', bufferViewIndex ).then( function ( bufferView ) {
+
+                return new Promise( function ( resolve ) {
+
+                    dracoLoader.decodeDracoFile( bufferView, function ( geometry ) {
+
+                        for ( const attributeName in geometry.attributes ) {
+
+                            const attribute = geometry.attributes[ attributeName ];
+                            const normalized = attributeNormalizedMap[ attributeName ];
+
+                            if ( normalized !== undefined ) attribute.normalized = normalized;
+
+                        }
+
+                        resolve( geometry );
+
+                    }, threeAttributeMap, attributeTypeMap );
+
+                } );
+
+            } );
+
+        }
+
+    }
+
+    /**
+     * Texture Transform Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_texture_transform
+     */
+    class GLTFTextureTransformExtension {
+
+        constructor() {
+
+            this.name = EXTENSIONS.KHR_TEXTURE_TRANSFORM;
+
+        }
+
+        extendTexture( texture, transform ) {
+
+            if ( transform.texCoord !== undefined ) {
+
+                console.warn( 'THREE.GLTFLoader: Custom UV sets in "' + this.name + '" extension not yet supported.' );
+
+            }
+
+            if ( transform.offset === undefined && transform.rotation === undefined && transform.scale === undefined ) {
+
+                // See https://github.com/mrdoob/three.js/issues/21819.
+                return texture;
+
+            }
+
+            texture = texture.clone();
+
+            if ( transform.offset !== undefined ) {
+
+                texture.offset.fromArray( transform.offset );
+
+            }
+
+            if ( transform.rotation !== undefined ) {
+
+                texture.rotation = transform.rotation;
+
+            }
+
+            if ( transform.scale !== undefined ) {
+
+                texture.repeat.fromArray( transform.scale );
+
+            }
+
+            texture.needsUpdate = true;
+
+            return texture;
+
+        }
+
+    }
+
+    /**
+     * Specular-Glossiness Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Archived/KHR_materials_pbrSpecularGlossiness
+     */
+
+    /**
+     * A sub class of StandardMaterial with some of the functionality
+     * changed via the `onBeforeCompile` callback
+     * @pailhead
+     */
+    class GLTFMeshStandardSGMaterial extends THREE.MeshStandardMaterial {
+
+        constructor( params ) {
+
+            super();
+
+            this.isGLTFSpecularGlossinessMaterial = true;
+
+            //various chunks that need replacing
+            const specularMapParsFragmentChunk = [
+                '#ifdef USE_SPECULARMAP',
+                '   uniform sampler2D specularMap;',
+                '#endif'
+            ].join( '\n' );
+
+            const glossinessMapParsFragmentChunk = [
+                '#ifdef USE_GLOSSINESSMAP',
+                '   uniform sampler2D glossinessMap;',
+                '#endif'
+            ].join( '\n' );
+
+            const specularMapFragmentChunk = [
+                'vec3 specularFactor = specular;',
+                '#ifdef USE_SPECULARMAP',
+                '   vec4 texelSpecular = texture2D( specularMap, vUv );',
+                '   // reads channel RGB, compatible with a glTF Specular-Glossiness (RGBA) texture',
+                '   specularFactor *= texelSpecular.rgb;',
+                '#endif'
+            ].join( '\n' );
+
+            const glossinessMapFragmentChunk = [
+                'float glossinessFactor = glossiness;',
+                '#ifdef USE_GLOSSINESSMAP',
+                '   vec4 texelGlossiness = texture2D( glossinessMap, vUv );',
+                '   // reads channel A, compatible with a glTF Specular-Glossiness (RGBA) texture',
+                '   glossinessFactor *= texelGlossiness.a;',
+                '#endif'
+            ].join( '\n' );
+
+            const lightPhysicalFragmentChunk = [
+                'PhysicalMaterial material;',
+                'material.diffuseColor = diffuseColor.rgb * ( 1. - max( specularFactor.r, max( specularFactor.g, specularFactor.b ) ) );',
+                'vec3 dxy = max( abs( dFdx( geometryNormal ) ), abs( dFdy( geometryNormal ) ) );',
+                'float geometryRoughness = max( max( dxy.x, dxy.y ), dxy.z );',
+                'material.roughness = max( 1.0 - glossinessFactor, 0.0525 ); // 0.0525 corresponds to the base mip of a 256 cubemap.',
+                'material.roughness += geometryRoughness;',
+                'material.roughness = min( material.roughness, 1.0 );',
+                'material.specularColor = specularFactor;',
+            ].join( '\n' );
+
+            const uniforms = {
+                specular: { value: new Color().setHex( 0xffffff ) },
+                glossiness: { value: 1 },
+                specularMap: { value: null },
+                glossinessMap: { value: null }
+            };
+
+            this._extraUniforms = uniforms;
+
+            this.onBeforeCompile = function ( shader ) {
+
+                for ( const uniformName in uniforms ) {
+
+                    shader.uniforms[ uniformName ] = uniforms[ uniformName ];
+
+                }
+
+                shader.fragmentShader = shader.fragmentShader
+                    .replace( 'uniform float roughness;', 'uniform vec3 specular;' )
+                    .replace( 'uniform float metalness;', 'uniform float glossiness;' )
+                    .replace( '#include <roughnessmap_pars_fragment>', specularMapParsFragmentChunk )
+                    .replace( '#include <metalnessmap_pars_fragment>', glossinessMapParsFragmentChunk )
+                    .replace( '#include <roughnessmap_fragment>', specularMapFragmentChunk )
+                    .replace( '#include <metalnessmap_fragment>', glossinessMapFragmentChunk )
+                    .replace( '#include <lights_physical_fragment>', lightPhysicalFragmentChunk );
+
+            };
+
+            Object.defineProperties( this, {
+
+                specular: {
+                    get: function () {
+
+                        return uniforms.specular.value;
+
+                    },
+                    set: function ( v ) {
+
+                        uniforms.specular.value = v;
+
+                    }
+                },
+
+                specularMap: {
+                    get: function () {
+
+                        return uniforms.specularMap.value;
+
+                    },
+                    set: function ( v ) {
+
+                        uniforms.specularMap.value = v;
+
+                        if ( v ) {
+
+                            this.defines.USE_SPECULARMAP = ''; // USE_UV is set by the renderer for specular maps
+
+                        } else {
+
+                            delete this.defines.USE_SPECULARMAP;
+
+                        }
+
+                    }
+                },
+
+                glossiness: {
+                    get: function () {
+
+                        return uniforms.glossiness.value;
+
+                    },
+                    set: function ( v ) {
+
+                        uniforms.glossiness.value = v;
+
+                    }
+                },
+
+                glossinessMap: {
+                    get: function () {
+
+                        return uniforms.glossinessMap.value;
+
+                    },
+                    set: function ( v ) {
+
+                        uniforms.glossinessMap.value = v;
+
+                        if ( v ) {
+
+                            this.defines.USE_GLOSSINESSMAP = '';
+                            this.defines.USE_UV = '';
+
+                        } else {
+
+                            delete this.defines.USE_GLOSSINESSMAP;
+                            delete this.defines.USE_UV;
+
+                        }
+
+                    }
+                }
+
+            } );
+
+            delete this.metalness;
+            delete this.roughness;
+            delete this.metalnessMap;
+            delete this.roughnessMap;
+
+            this.setValues( params );
+
+        }
+
+        copy( source ) {
+
+            super.copy( source );
+
+            this.specularMap = source.specularMap;
+            this.specular.copy( source.specular );
+            this.glossinessMap = source.glossinessMap;
+            this.glossiness = source.glossiness;
+            delete this.metalness;
+            delete this.roughness;
+            delete this.metalnessMap;
+            delete this.roughnessMap;
+            return this;
+
+        }
+
+    }
+
+
+    class GLTFMaterialsPbrSpecularGlossinessExtension {
+
+        constructor() {
+
+            this.name = EXTENSIONS.KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS;
+
+            this.specularGlossinessParams = [
+                'color',
+                'map',
+                'lightMap',
+                'lightMapIntensity',
+                'aoMap',
+                'aoMapIntensity',
+                'emissive',
+                'emissiveIntensity',
+                'emissiveMap',
+                'bumpMap',
+                'bumpScale',
+                'normalMap',
+                'normalMapType',
+                'displacementMap',
+                'displacementScale',
+                'displacementBias',
+                'specularMap',
+                'specular',
+                'glossinessMap',
+                'glossiness',
+                'alphaMap',
+                'envMap',
+                'envMapIntensity'
+            ];
+
+        }
+
+        getMaterialType() {
+
+            return GLTFMeshStandardSGMaterial;
+
+        }
+
+        extendParams( materialParams, materialDef, parser ) {
+
+            const pbrSpecularGlossiness = materialDef.extensions[ this.name ];
+
+            materialParams.color = new Color( 1.0, 1.0, 1.0 );
+            materialParams.opacity = 1.0;
+
+            const pending = [];
+
+            if ( Array.isArray( pbrSpecularGlossiness.diffuseFactor ) ) {
+
+                const array = pbrSpecularGlossiness.diffuseFactor;
+
+                materialParams.color.fromArray( array );
+                materialParams.opacity = array[ 3 ];
+
+            }
+
+            if ( pbrSpecularGlossiness.diffuseTexture !== undefined ) {
+
+                pending.push( parser.assignTexture( materialParams, 'map', pbrSpecularGlossiness.diffuseTexture, sRGBEncoding ) );
+
+            }
+
+            materialParams.emissive = new Color( 0.0, 0.0, 0.0 );
+            materialParams.glossiness = pbrSpecularGlossiness.glossinessFactor !== undefined ? pbrSpecularGlossiness.glossinessFactor : 1.0;
+            materialParams.specular = new Color( 1.0, 1.0, 1.0 );
+
+            if ( Array.isArray( pbrSpecularGlossiness.specularFactor ) ) {
+
+                materialParams.specular.fromArray( pbrSpecularGlossiness.specularFactor );
+
+            }
+
+            if ( pbrSpecularGlossiness.specularGlossinessTexture !== undefined ) {
+
+                const specGlossMapDef = pbrSpecularGlossiness.specularGlossinessTexture;
+                pending.push( parser.assignTexture( materialParams, 'glossinessMap', specGlossMapDef ) );
+                pending.push( parser.assignTexture( materialParams, 'specularMap', specGlossMapDef, sRGBEncoding ) );
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+        createMaterial( materialParams ) {
+
+            const material = new GLTFMeshStandardSGMaterial( materialParams );
+            material.fog = true;
+
+            material.color = materialParams.color;
+
+            material.map = materialParams.map === undefined ? null : materialParams.map;
+
+            material.lightMap = null;
+            material.lightMapIntensity = 1.0;
+
+            material.aoMap = materialParams.aoMap === undefined ? null : materialParams.aoMap;
+            material.aoMapIntensity = 1.0;
+
+            material.emissive = materialParams.emissive;
+            material.emissiveIntensity = 1.0;
+            material.emissiveMap = materialParams.emissiveMap === undefined ? null : materialParams.emissiveMap;
+
+            material.bumpMap = materialParams.bumpMap === undefined ? null : materialParams.bumpMap;
+            material.bumpScale = 1;
+
+            material.normalMap = materialParams.normalMap === undefined ? null : materialParams.normalMap;
+            material.normalMapType = TangentSpaceNormalMap;
+
+            if ( materialParams.normalScale ) material.normalScale = materialParams.normalScale;
+
+            material.displacementMap = null;
+            material.displacementScale = 1;
+            material.displacementBias = 0;
+
+            material.specularMap = materialParams.specularMap === undefined ? null : materialParams.specularMap;
+            material.specular = materialParams.specular;
+
+            material.glossinessMap = materialParams.glossinessMap === undefined ? null : materialParams.glossinessMap;
+            material.glossiness = materialParams.glossiness;
+
+            material.alphaMap = null;
+
+            material.envMap = materialParams.envMap === undefined ? null : materialParams.envMap;
+            material.envMapIntensity = 1.0;
+
+            return material;
+
+        }
+
+    }
+
+    /**
+     * Mesh Quantization Extension
+     *
+     * Specification: https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_mesh_quantization
+     */
+    class GLTFMeshQuantizationExtension {
+
+        constructor() {
+
+            this.name = EXTENSIONS.KHR_MESH_QUANTIZATION;
+
+        }
+
+    }
+
+    /*********************************/
+    /********** INTERPOLATION ********/
+    /*********************************/
+
+    // Spline Interpolation
+    // Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#appendix-c-spline-interpolation
+    class GLTFCubicSplineInterpolant extends THREE.Interpolant {
+
+        constructor( parameterPositions, sampleValues, sampleSize, resultBuffer ) {
+
+            super( parameterPositions, sampleValues, sampleSize, resultBuffer );
+
+        }
+
+        copySampleValue_( index ) {
+
+            // Copies a sample value to the result buffer. See description of glTF
+            // CUBICSPLINE values layout in interpolate_() function below.
+
+            const result = this.resultBuffer,
+                values = this.sampleValues,
+                valueSize = this.valueSize,
+                offset = index * valueSize * 3 + valueSize;
+
+            for ( let i = 0; i !== valueSize; i ++ ) {
+
+                result[ i ] = values[ offset + i ];
+
+            }
+
+            return result;
+
+        }
+
+    }
+
+    GLTFCubicSplineInterpolant.prototype.beforeStart_ = GLTFCubicSplineInterpolant.prototype.copySampleValue_;
+
+    GLTFCubicSplineInterpolant.prototype.afterEnd_ = GLTFCubicSplineInterpolant.prototype.copySampleValue_;
+
+    GLTFCubicSplineInterpolant.prototype.interpolate_ = function ( i1, t0, t, t1 ) {
+
+        const result = this.resultBuffer;
+        const values = this.sampleValues;
+        const stride = this.valueSize;
+
+        const stride2 = stride * 2;
+        const stride3 = stride * 3;
+
+        const td = t1 - t0;
+
+        const p = ( t - t0 ) / td;
+        const pp = p * p;
+        const ppp = pp * p;
+
+        const offset1 = i1 * stride3;
+        const offset0 = offset1 - stride3;
+
+        const s2 = - 2 * ppp + 3 * pp;
+        const s3 = ppp - pp;
+        const s0 = 1 - s2;
+        const s1 = s3 - pp + p;
+
+        // Layout of keyframe output values for CUBICSPLINE animations:
+        //   [ inTangent_1, splineVertex_1, outTangent_1, inTangent_2, splineVertex_2, ... ]
+        for ( let i = 0; i !== stride; i ++ ) {
+
+            const p0 = values[ offset0 + i + stride ]; // splineVertex_k
+            const m0 = values[ offset0 + i + stride2 ] * td; // outTangent_k * (t_k+1 - t_k)
+            const p1 = values[ offset1 + i + stride ]; // splineVertex_k+1
+            const m1 = values[ offset1 + i ] * td; // inTangent_k+1 * (t_k+1 - t_k)
+
+            result[ i ] = s0 * p0 + s1 * m0 + s2 * p1 + s3 * m1;
+
+        }
+
+        return result;
+
+    };
+
+    const _q = new THREE.Quaternion();
+
+    class GLTFCubicSplineQuaternionInterpolant extends GLTFCubicSplineInterpolant {
+
+        interpolate_( i1, t0, t, t1 ) {
+
+            const result = super.interpolate_( i1, t0, t, t1 );
+
+            _q.fromArray( result ).normalize().toArray( result );
+
+            return result;
+
+        }
+
+    }
+
+
+    /*********************************/
+    /********** INTERNALS ************/
+    /*********************************/
+
+    /* CONSTANTS */
+
+    const WEBGL_CONSTANTS = {
+        FLOAT: 5126,
+        //FLOAT_MAT2: 35674,
+        FLOAT_MAT3: 35675,
+        FLOAT_MAT4: 35676,
+        FLOAT_VEC2: 35664,
+        FLOAT_VEC3: 35665,
+        FLOAT_VEC4: 35666,
+        LINEAR: 9729,
+        REPEAT: 10497,
+        SAMPLER_2D: 35678,
+        POINTS: 0,
+        LINES: 1,
+        LINE_LOOP: 2,
+        LINE_STRIP: 3,
+        TRIANGLES: 4,
+        TRIANGLE_STRIP: 5,
+        TRIANGLE_FAN: 6,
+        UNSIGNED_BYTE: 5121,
+        UNSIGNED_SHORT: 5123
+    };
+
+    const WEBGL_COMPONENT_TYPES = {
+        5120: Int8Array,
+        5121: Uint8Array,
+        5122: Int16Array,
+        5123: Uint16Array,
+        5125: Uint32Array,
+        5126: Float32Array
+    };
+
+    const WEBGL_FILTERS = {
+        9728: THREE.NearestFilter,
+        9729: THREE.LinearFilter,
+        9984: THREE.NearestMipmapNearestFilter,
+        9985: THREE.LinearMipmapNearestFilter,
+        9986: THREE.NearestMipmapLinearFilter,
+        9987: THREE.LinearMipmapLinearFilter
+    };
+
+    const WEBGL_WRAPPINGS = {
+        33071: THREE.ClampToEdgeWrapping,
+        33648: THREE.MirroredRepeatWrapping,
+        10497: THREE.RepeatWrapping
+    };
+
+    const WEBGL_TYPE_SIZES = {
+        'SCALAR': 1,
+        'VEC2': 2,
+        'VEC3': 3,
+        'VEC4': 4,
+        'MAT2': 4,
+        'MAT3': 9,
+        'MAT4': 16
+    };
+
+    const ATTRIBUTES = {
+        POSITION: 'position',
+        NORMAL: 'normal',
+        TANGENT: 'tangent',
+        TEXCOORD_0: 'uv',
+        TEXCOORD_1: 'uv2',
+        COLOR_0: 'color',
+        WEIGHTS_0: 'skinWeight',
+        JOINTS_0: 'skinIndex',
+    };
+
+    const PATH_PROPERTIES = {
+        scale: 'scale',
+        translation: 'position',
+        rotation: 'quaternion',
+        weights: 'morphTargetInfluences'
+    };
+
+    const INTERPOLATION = {
+        CUBICSPLINE: undefined, // We use a custom interpolant (GLTFCubicSplineInterpolation) for CUBICSPLINE tracks. Each
+                                    // keyframe track will be initialized with a default interpolation type, then modified.
+        LINEAR: THREE.InterpolateLinear,
+        STEP: THREE.InterpolateDiscrete
+    };
+
+    const ALPHA_MODES = {
+        OPAQUE: 'OPAQUE',
+        MASK: 'MASK',
+        BLEND: 'BLEND'
+    };
+
+    /**
+     * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#default-material
+     */
+    function createDefaultMaterial( cache ) {
+
+        if ( cache[ 'DefaultMaterial' ] === undefined ) {
+
+            cache[ 'DefaultMaterial' ] = new MeshStandardMaterial( {
+                color: 0xFFFFFF,
+                emissive: 0x000000,
+                metalness: 1,
+                roughness: 1,
+                transparent: false,
+                depthTest: true,
+                side: FrontSide
+            } );
+
+        }
+
+        return cache[ 'DefaultMaterial' ];
+
+    }
+
+    function addUnknownExtensionsToUserData( knownExtensions, object, objectDef ) {
+
+        // Add unknown glTF extensions to an object's userData.
+
+        for ( const name in objectDef.extensions ) {
+
+            if ( knownExtensions[ name ] === undefined ) {
+
+                object.userData.gltfExtensions = object.userData.gltfExtensions || {};
+                object.userData.gltfExtensions[ name ] = objectDef.extensions[ name ];
+
+            }
+
+        }
+
+    }
+
+    /**
+     * @param {Object3D|Material|BufferGeometry} object
+     * @param {GLTF.definition} gltfDef
+     */
+    function assignExtrasToUserData( object, gltfDef ) {
+
+        if ( gltfDef.extras !== undefined ) {
+
+            if ( typeof gltfDef.extras === 'object' ) {
+
+                Object.assign( object.userData, gltfDef.extras );
+
+            } else {
+
+                console.warn( 'THREE.GLTFLoader: Ignoring primitive type .extras, ' + gltfDef.extras );
+
+            }
+
+        }
+
+    }
+
+    /**
+     * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#morph-targets
+     *
+     * @param {BufferGeometry} geometry
+     * @param {Array<GLTF.Target>} targets
+     * @param {GLTFParser} parser
+     * @return {Promise<BufferGeometry>}
+     */
+    function addMorphTargets( geometry, targets, parser ) {
+
+        let hasMorphPosition = false;
+        let hasMorphNormal = false;
+        let hasMorphColor = false;
+
+        for ( let i = 0, il = targets.length; i < il; i ++ ) {
+
+            const target = targets[ i ];
+
+            if ( target.POSITION !== undefined ) hasMorphPosition = true;
+            if ( target.NORMAL !== undefined ) hasMorphNormal = true;
+            if ( target.COLOR_0 !== undefined ) hasMorphColor = true;
+
+            if ( hasMorphPosition && hasMorphNormal && hasMorphColor ) break;
+
+        }
+
+        if ( ! hasMorphPosition && ! hasMorphNormal && ! hasMorphColor ) return Promise.resolve( geometry );
+
+        const pendingPositionAccessors = [];
+        const pendingNormalAccessors = [];
+        const pendingColorAccessors = [];
+
+        for ( let i = 0, il = targets.length; i < il; i ++ ) {
+
+            const target = targets[ i ];
+
+            if ( hasMorphPosition ) {
+
+                const pendingAccessor = target.POSITION !== undefined
+                    ? parser.getDependency( 'accessor', target.POSITION )
+                    : geometry.attributes.position;
+
+                pendingPositionAccessors.push( pendingAccessor );
+
+            }
+
+            if ( hasMorphNormal ) {
+
+                const pendingAccessor = target.NORMAL !== undefined
+                    ? parser.getDependency( 'accessor', target.NORMAL )
+                    : geometry.attributes.normal;
+
+                pendingNormalAccessors.push( pendingAccessor );
+
+            }
+
+            if ( hasMorphColor ) {
+
+                const pendingAccessor = target.COLOR_0 !== undefined
+                    ? parser.getDependency( 'accessor', target.COLOR_0 )
+                    : geometry.attributes.color;
+
+                pendingColorAccessors.push( pendingAccessor );
+
+            }
+
+        }
+
+        return Promise.all( [
+            Promise.all( pendingPositionAccessors ),
+            Promise.all( pendingNormalAccessors ),
+            Promise.all( pendingColorAccessors )
+        ] ).then( function ( accessors ) {
+
+            const morphPositions = accessors[ 0 ];
+            const morphNormals = accessors[ 1 ];
+            const morphColors = accessors[ 2 ];
+
+            if ( hasMorphPosition ) geometry.morphAttributes.position = morphPositions;
+            if ( hasMorphNormal ) geometry.morphAttributes.normal = morphNormals;
+            if ( hasMorphColor ) geometry.morphAttributes.color = morphColors;
+            geometry.morphTargetsRelative = true;
+
+            return geometry;
+
+        } );
+
+    }
+
+    /**
+     * @param {Mesh} mesh
+     * @param {GLTF.Mesh} meshDef
+     */
+    function updateMorphTargets( mesh, meshDef ) {
+
+        mesh.updateMorphTargets();
+
+        if ( meshDef.weights !== undefined ) {
+
+            for ( let i = 0, il = meshDef.weights.length; i < il; i ++ ) {
+
+                mesh.morphTargetInfluences[ i ] = meshDef.weights[ i ];
+
+            }
+
+        }
+
+        // .extras has user-defined data, so check that .extras.targetNames is an array.
+        if ( meshDef.extras && Array.isArray( meshDef.extras.targetNames ) ) {
+
+            const targetNames = meshDef.extras.targetNames;
+
+            if ( mesh.morphTargetInfluences.length === targetNames.length ) {
+
+                mesh.morphTargetDictionary = {};
+
+                for ( let i = 0, il = targetNames.length; i < il; i ++ ) {
+
+                    mesh.morphTargetDictionary[ targetNames[ i ] ] = i;
+
+                }
+
+            } else {
+
+                console.warn( 'THREE.GLTFLoader: Invalid extras.targetNames length. Ignoring names.' );
+
+            }
+
+        }
+
+    }
+
+    function createPrimitiveKey( primitiveDef ) {
+
+        const dracoExtension = primitiveDef.extensions && primitiveDef.extensions[ EXTENSIONS.KHR_DRACO_MESH_COMPRESSION ];
+        let geometryKey;
+
+        if ( dracoExtension ) {
+
+            geometryKey = 'draco:' + dracoExtension.bufferView
+                    + ':' + dracoExtension.indices
+                    + ':' + createAttributesKey( dracoExtension.attributes );
+
+        } else {
+
+            geometryKey = primitiveDef.indices + ':' + createAttributesKey( primitiveDef.attributes ) + ':' + primitiveDef.mode;
+
+        }
+
+        return geometryKey;
+
+    }
+
+    function createAttributesKey( attributes ) {
+
+        let attributesKey = '';
+
+        const keys = Object.keys( attributes ).sort();
+
+        for ( let i = 0, il = keys.length; i < il; i ++ ) {
+
+            attributesKey += keys[ i ] + ':' + attributes[ keys[ i ] ] + ';';
+
+        }
+
+        return attributesKey;
+
+    }
+
+    function getNormalizedComponentScale( constructor ) {
+
+        // Reference:
+        // https://github.com/KhronosGroup/glTF/tree/master/extensions/2.0/Khronos/KHR_mesh_quantization#encoding-quantized-data
+
+        switch ( constructor ) {
+
+            case Int8Array:
+                return 1 / 127;
+
+            case Uint8Array:
+                return 1 / 255;
+
+            case Int16Array:
+                return 1 / 32767;
+
+            case Uint16Array:
+                return 1 / 65535;
+
+            default:
+                throw new Error( 'THREE.GLTFLoader: Unsupported normalized accessor component type.' );
+
+        }
+
+    }
+
+    function getImageURIMimeType( uri ) {
+
+        if ( uri.search( /\.jpe?g($|\?)/i ) > 0 || uri.search( /^data\:image\/jpeg/ ) === 0 ) return 'image/jpeg';
+        if ( uri.search( /\.webp($|\?)/i ) > 0 || uri.search( /^data\:image\/webp/ ) === 0 ) return 'image/webp';
+
+        return 'image/png';
+
+    }
+
+    /* GLTF PARSER */
+
+    class GLTFParser {
+
+        constructor( json = {}, options = {} ) {
+
+            this.json = json;
+            this.extensions = {};
+            this.plugins = {};
+            this.options = options;
+
+            // loader object cache
+            this.cache = new GLTFRegistry();
+
+            // associations between Three.js objects and glTF elements
+            this.associations = new Map();
+
+            // BufferGeometry caching
+            this.primitiveCache = {};
+
+            // Object3D instance caches
+            this.meshCache = { refs: {}, uses: {} };
+            this.cameraCache = { refs: {}, uses: {} };
+            this.lightCache = { refs: {}, uses: {} };
+
+            this.sourceCache = {};
+            this.textureCache = {};
+
+            // Track node names, to ensure no duplicates
+            this.nodeNamesUsed = {};
+
+            // Use an ImageBitmapLoader if imageBitmaps are supported. Moves much of the
+            // expensive work of uploading a texture to the GPU off the main thread.
+            if ( typeof createImageBitmap !== 'undefined' && /^((?!chrome|android).)*safari/i.test( navigator.userAgent ) === false ) {
+
+                this.textureLoader = new ImageBitmapLoader( this.options.manager );
+
+            } else {
+
+                this.textureLoader = new TextureLoader( this.options.manager );
+
+            }
+
+            this.textureLoader.setCrossOrigin( this.options.crossOrigin );
+            this.textureLoader.setRequestHeader( this.options.requestHeader );
+
+            this.fileLoader = new FileLoader( this.options.manager );
+            this.fileLoader.setResponseType( 'arraybuffer' );
+
+            if ( this.options.crossOrigin === 'use-credentials' ) {
+
+                this.fileLoader.setWithCredentials( true );
+
+            }
+
+        }
+
+        setExtensions( extensions ) {
+
+            this.extensions = extensions;
+
+        }
+
+        setPlugins( plugins ) {
+
+            this.plugins = plugins;
+
+        }
+
+        parse( onLoad, onError ) {
+
+            const parser = this;
+            const json = this.json;
+            const extensions = this.extensions;
+
+            // Clear the loader cache
+            this.cache.removeAll();
+
+            // Mark the special nodes/meshes in json for efficient parse
+            this._invokeAll( function ( ext ) {
+
+                return ext._markDefs && ext._markDefs();
+
+            } );
+
+            Promise.all( this._invokeAll( function ( ext ) {
+
+                return ext.beforeRoot && ext.beforeRoot();
+
+            } ) ).then( function () {
+
+                return Promise.all( [
+
+                    parser.getDependencies( 'scene' ),
+                    parser.getDependencies( 'animation' ),
+                    parser.getDependencies( 'camera' ),
+
+                ] );
+
+            } ).then( function ( dependencies ) {
+
+                const result = {
+                    scene: dependencies[ 0 ][ json.scene || 0 ],
+                    scenes: dependencies[ 0 ],
+                    animations: dependencies[ 1 ],
+                    cameras: dependencies[ 2 ],
+                    asset: json.asset,
+                    parser: parser,
+                    userData: {}
+                };
+
+                addUnknownExtensionsToUserData( extensions, result, json );
+
+                assignExtrasToUserData( result, json );
+
+                Promise.all( parser._invokeAll( function ( ext ) {
+
+                    return ext.afterRoot && ext.afterRoot( result );
+
+                } ) ).then( function () {
+
+                    onLoad( result );
+
+                } );
+
+            } ).catch( onError );
+
+        }
+
+        /**
+         * Marks the special nodes/meshes in json for efficient parse.
+         */
+        _markDefs() {
+
+            const nodeDefs = this.json.nodes || [];
+            const skinDefs = this.json.skins || [];
+            const meshDefs = this.json.meshes || [];
+
+            // Nothing in the node definition indicates whether it is a Bone or an
+            // Object3D. Use the skins' joint references to mark bones.
+            for ( let skinIndex = 0, skinLength = skinDefs.length; skinIndex < skinLength; skinIndex ++ ) {
+
+                const joints = skinDefs[ skinIndex ].joints;
+
+                for ( let i = 0, il = joints.length; i < il; i ++ ) {
+
+                    nodeDefs[ joints[ i ] ].isBone = true;
+
+                }
+
+            }
+
+            // Iterate over all nodes, marking references to shared resources,
+            // as well as skeleton joints.
+            for ( let nodeIndex = 0, nodeLength = nodeDefs.length; nodeIndex < nodeLength; nodeIndex ++ ) {
+
+                const nodeDef = nodeDefs[ nodeIndex ];
+
+                if ( nodeDef.mesh !== undefined ) {
+
+                    this._addNodeRef( this.meshCache, nodeDef.mesh );
+
+                    // Nothing in the mesh definition indicates whether it is
+                    // a SkinnedMesh or Mesh. Use the node's mesh reference
+                    // to mark SkinnedMesh if node has skin.
+                    if ( nodeDef.skin !== undefined ) {
+
+                        meshDefs[ nodeDef.mesh ].isSkinnedMesh = true;
+
+                    }
+
+                }
+
+                if ( nodeDef.camera !== undefined ) {
+
+                    this._addNodeRef( this.cameraCache, nodeDef.camera );
+
+                }
+
+            }
+
+        }
+
+        /**
+         * Counts references to shared node / Object3D resources. These resources
+         * can be reused, or "instantiated", at multiple nodes in the scene
+         * hierarchy. Mesh, Camera, and Light instances are instantiated and must
+         * be marked. Non-scenegraph resources (like Materials, Geometries, and
+         * Textures) can be reused directly and are not marked here.
+         *
+         * Example: CesiumMilkTruck sample model reuses "Wheel" meshes.
+         */
+        _addNodeRef( cache, index ) {
+
+            if ( index === undefined ) return;
+
+            if ( cache.refs[ index ] === undefined ) {
+
+                cache.refs[ index ] = cache.uses[ index ] = 0;
+
+            }
+
+            cache.refs[ index ] ++;
+
+        }
+
+        /** Returns a reference to a shared resource, cloning it if necessary. */
+        _getNodeRef( cache, index, object ) {
+
+            if ( cache.refs[ index ] <= 1 ) return object;
+
+            const ref = object.clone();
+
+            // Propagates mappings to the cloned object, prevents mappings on the
+            // original object from being lost.
+            const updateMappings = ( original, clone ) => {
+
+                const mappings = this.associations.get( original );
+                if ( mappings != null ) {
+
+                    this.associations.set( clone, mappings );
+
+                }
+
+                for ( const [ i, child ] of original.children.entries() ) {
+
+                    updateMappings( child, clone.children[ i ] );
+
+                }
+
+            };
+
+            updateMappings( object, ref );
+
+            ref.name += '_instance_' + ( cache.uses[ index ] ++ );
+
+            return ref;
+
+        }
+
+        _invokeOne( func ) {
+
+            const extensions = Object.values( this.plugins );
+            extensions.push( this );
+
+            for ( let i = 0; i < extensions.length; i ++ ) {
+
+                const result = func( extensions[ i ] );
+
+                if ( result ) return result;
+
+            }
+
+            return null;
+
+        }
+
+        _invokeAll( func ) {
+
+            const extensions = Object.values( this.plugins );
+            extensions.unshift( this );
+
+            const pending = [];
+
+            for ( let i = 0; i < extensions.length; i ++ ) {
+
+                const result = func( extensions[ i ] );
+
+                if ( result ) pending.push( result );
+
+            }
+
+            return pending;
+
+        }
+
+        /**
+         * Requests the specified dependency asynchronously, with caching.
+         * @param {string} type
+         * @param {number} index
+         * @return {Promise<Object3D|Material|THREE.Texture|AnimationClip|ArrayBuffer|Object>}
+         */
+        getDependency( type, index ) {
+
+            const cacheKey = type + ':' + index;
+            let dependency = this.cache.get( cacheKey );
+
+            if ( ! dependency ) {
+
+                switch ( type ) {
+
+                    case 'scene':
+                        dependency = this.loadScene( index );
+                        break;
+
+                    case 'node':
+                        dependency = this.loadNode( index );
+                        break;
+
+                    case 'mesh':
+                        dependency = this._invokeOne( function ( ext ) {
+
+                            return ext.loadMesh && ext.loadMesh( index );
+
+                        } );
+                        break;
+
+                    case 'accessor':
+                        dependency = this.loadAccessor( index );
+                        break;
+
+                    case 'bufferView':
+                        dependency = this._invokeOne( function ( ext ) {
+
+                            return ext.loadBufferView && ext.loadBufferView( index );
+
+                        } );
+                        break;
+
+                    case 'buffer':
+                        dependency = this.loadBuffer( index );
+                        break;
+
+                    case 'material':
+                        dependency = this._invokeOne( function ( ext ) {
+
+                            return ext.loadMaterial && ext.loadMaterial( index );
+
+                        } );
+                        break;
+
+                    case 'texture':
+                        dependency = this._invokeOne( function ( ext ) {
+
+                            return ext.loadTexture && ext.loadTexture( index );
+
+                        } );
+                        break;
+
+                    case 'skin':
+                        dependency = this.loadSkin( index );
+                        break;
+
+                    case 'animation':
+                        dependency = this.loadAnimation( index );
+                        break;
+
+                    case 'camera':
+                        dependency = this.loadCamera( index );
+                        break;
+
+                    default:
+                        throw new Error( 'Unknown type: ' + type );
+
+                }
+
+                this.cache.add( cacheKey, dependency );
+
+            }
+
+            return dependency;
+
+        }
+
+        /**
+         * Requests all dependencies of the specified type asynchronously, with caching.
+         * @param {string} type
+         * @return {Promise<Array<Object>>}
+         */
+        getDependencies( type ) {
+
+            let dependencies = this.cache.get( type );
+
+            if ( ! dependencies ) {
+
+                const parser = this;
+                const defs = this.json[ type + ( type === 'mesh' ? 'es' : 's' ) ] || [];
+
+                dependencies = Promise.all( defs.map( function ( def, index ) {
+
+                    return parser.getDependency( type, index );
+
+                } ) );
+
+                this.cache.add( type, dependencies );
+
+            }
+
+            return dependencies;
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#buffers-and-buffer-views
+         * @param {number} bufferIndex
+         * @return {Promise<ArrayBuffer>}
+         */
+        loadBuffer( bufferIndex ) {
+
+            const bufferDef = this.json.buffers[ bufferIndex ];
+            const loader = this.fileLoader;
+
+            if ( bufferDef.type && bufferDef.type !== 'arraybuffer' ) {
+
+                throw new Error( 'THREE.GLTFLoader: ' + bufferDef.type + ' buffer type is not supported.' );
+
+            }
+
+            // If present, GLB container is required to be the first buffer.
+            if ( bufferDef.uri === undefined && bufferIndex === 0 ) {
+
+                return Promise.resolve( this.extensions[ EXTENSIONS.KHR_BINARY_GLTF ].body );
+
+            }
+
+            const options = this.options;
+
+            return new Promise( function ( resolve, reject ) {
+
+                loader.load( LoaderUtils.resolveURL( bufferDef.uri, options.path ), resolve, undefined, function () {
+
+                    reject( new Error( 'THREE.GLTFLoader: Failed to load buffer "' + bufferDef.uri + '".' ) );
+
+                } );
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#buffers-and-buffer-views
+         * @param {number} bufferViewIndex
+         * @return {Promise<ArrayBuffer>}
+         */
+        loadBufferView( bufferViewIndex ) {
+
+            const bufferViewDef = this.json.bufferViews[ bufferViewIndex ];
+
+            return this.getDependency( 'buffer', bufferViewDef.buffer ).then( function ( buffer ) {
+
+                const byteLength = bufferViewDef.byteLength || 0;
+                const byteOffset = bufferViewDef.byteOffset || 0;
+                return buffer.slice( byteOffset, byteOffset + byteLength );
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#accessors
+         * @param {number} accessorIndex
+         * @return {Promise<BufferAttribute|InterleavedBufferAttribute>}
+         */
+        loadAccessor( accessorIndex ) {
+
+            const parser = this;
+            const json = this.json;
+
+            const accessorDef = this.json.accessors[ accessorIndex ];
+
+            if ( accessorDef.bufferView === undefined && accessorDef.sparse === undefined ) {
+
+                // Ignore empty accessors, which may be used to declare runtime
+                // information about attributes coming from another source (e.g. Draco
+                // compression extension).
+                return Promise.resolve( null );
+
+            }
+
+            const pendingBufferViews = [];
+
+            if ( accessorDef.bufferView !== undefined ) {
+
+                pendingBufferViews.push( this.getDependency( 'bufferView', accessorDef.bufferView ) );
+
+            } else {
+
+                pendingBufferViews.push( null );
+
+            }
+
+            if ( accessorDef.sparse !== undefined ) {
+
+                pendingBufferViews.push( this.getDependency( 'bufferView', accessorDef.sparse.indices.bufferView ) );
+                pendingBufferViews.push( this.getDependency( 'bufferView', accessorDef.sparse.values.bufferView ) );
+
+            }
+
+            return Promise.all( pendingBufferViews ).then( function ( bufferViews ) {
+
+                const bufferView = bufferViews[ 0 ];
+
+                const itemSize = WEBGL_TYPE_SIZES[ accessorDef.type ];
+                const TypedArray = WEBGL_COMPONENT_TYPES[ accessorDef.componentType ];
+
+                // For VEC3: itemSize is 3, elementBytes is 4, itemBytes is 12.
+                const elementBytes = TypedArray.BYTES_PER_ELEMENT;
+                const itemBytes = elementBytes * itemSize;
+                const byteOffset = accessorDef.byteOffset || 0;
+                const byteStride = accessorDef.bufferView !== undefined ? json.bufferViews[ accessorDef.bufferView ].byteStride : undefined;
+                const normalized = accessorDef.normalized === true;
+                let array, bufferAttribute;
+
+                // The buffer is not interleaved if the stride is the item size in bytes.
+                if ( byteStride && byteStride !== itemBytes ) {
+
+                    // Each "slice" of the buffer, as defined by 'count' elements of 'byteStride' bytes, gets its own InterleavedBuffer
+                    // This makes sure that IBA.count reflects accessor.count properly
+                    const ibSlice = Math.floor( byteOffset / byteStride );
+                    const ibCacheKey = 'InterleavedBuffer:' + accessorDef.bufferView + ':' + accessorDef.componentType + ':' + ibSlice + ':' + accessorDef.count;
+                    let ib = parser.cache.get( ibCacheKey );
+
+                    if ( ! ib ) {
+
+                        array = new TypedArray( bufferView, ibSlice * byteStride, accessorDef.count * byteStride / elementBytes );
+
+                        // Integer parameters to IB/IBA are in array elements, not bytes.
+                        ib = new InterleavedBuffer( array, byteStride / elementBytes );
+
+                        parser.cache.add( ibCacheKey, ib );
+
+                    }
+
+                    bufferAttribute = new InterleavedBufferAttribute( ib, itemSize, ( byteOffset % byteStride ) / elementBytes, normalized );
+
+                } else {
+
+                    if ( bufferView === null ) {
+
+                        array = new TypedArray( accessorDef.count * itemSize );
+
+                    } else {
+
+                        array = new TypedArray( bufferView, byteOffset, accessorDef.count * itemSize );
+
+                    }
+
+                    bufferAttribute = new BufferAttribute( array, itemSize, normalized );
+
+                }
+
+                // https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#sparse-accessors
+                if ( accessorDef.sparse !== undefined ) {
+
+                    const itemSizeIndices = WEBGL_TYPE_SIZES.SCALAR;
+                    const TypedArrayIndices = WEBGL_COMPONENT_TYPES[ accessorDef.sparse.indices.componentType ];
+
+                    const byteOffsetIndices = accessorDef.sparse.indices.byteOffset || 0;
+                    const byteOffsetValues = accessorDef.sparse.values.byteOffset || 0;
+
+                    const sparseIndices = new TypedArrayIndices( bufferViews[ 1 ], byteOffsetIndices, accessorDef.sparse.count * itemSizeIndices );
+                    const sparseValues = new TypedArray( bufferViews[ 2 ], byteOffsetValues, accessorDef.sparse.count * itemSize );
+
+                    if ( bufferView !== null ) {
+
+                        // Avoid modifying the original ArrayBuffer, if the bufferView wasn't initialized with zeroes.
+                        bufferAttribute = new BufferAttribute( bufferAttribute.array.slice(), bufferAttribute.itemSize, bufferAttribute.normalized );
+
+                    }
+
+                    for ( let i = 0, il = sparseIndices.length; i < il; i ++ ) {
+
+                        const index = sparseIndices[ i ];
+
+                        bufferAttribute.setX( index, sparseValues[ i * itemSize ] );
+                        if ( itemSize >= 2 ) bufferAttribute.setY( index, sparseValues[ i * itemSize + 1 ] );
+                        if ( itemSize >= 3 ) bufferAttribute.setZ( index, sparseValues[ i * itemSize + 2 ] );
+                        if ( itemSize >= 4 ) bufferAttribute.setW( index, sparseValues[ i * itemSize + 3 ] );
+                        if ( itemSize >= 5 ) throw new Error( 'THREE.GLTFLoader: Unsupported itemSize in sparse BufferAttribute.' );
+
+                    }
+
+                }
+
+                return bufferAttribute;
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#textures
+         * @param {number} textureIndex
+         * @return {Promise<THREE.Texture>}
+         */
+        loadTexture( textureIndex ) {
+
+            const json = this.json;
+            const options = this.options;
+            const textureDef = json.textures[ textureIndex ];
+            const sourceIndex = textureDef.source;
+            const sourceDef = json.images[ sourceIndex ];
+
+            let loader = this.textureLoader;
+
+            if ( sourceDef.uri ) {
+
+                const handler = options.manager.getHandler( sourceDef.uri );
+                if ( handler !== null ) loader = handler;
+
+            }
+
+            return this.loadTextureImage( textureIndex, sourceIndex, loader );
+
+        }
+
+        loadTextureImage( textureIndex, sourceIndex, loader ) {
+
+            const parser = this;
+            const json = this.json;
+
+            const textureDef = json.textures[ textureIndex ];
+            const sourceDef = json.images[ sourceIndex ];
+
+            const cacheKey = ( sourceDef.uri || sourceDef.bufferView ) + ':' + textureDef.sampler;
+
+            if ( this.textureCache[ cacheKey ] ) {
+
+                // See https://github.com/mrdoob/three.js/issues/21559.
+                return this.textureCache[ cacheKey ];
+
+            }
+
+            const promise = this.loadImageSource( sourceIndex, loader ).then( function ( texture ) {
+
+                texture.flipY = false;
+
+                if ( textureDef.name ) texture.name = textureDef.name;
+
+                const samplers = json.samplers || {};
+                const sampler = samplers[ textureDef.sampler ] || {};
+
+                texture.magFilter = WEBGL_FILTERS[ sampler.magFilter ] || LinearFilter;
+                texture.minFilter = WEBGL_FILTERS[ sampler.minFilter ] || LinearMipmapLinearFilter;
+                texture.wrapS = WEBGL_WRAPPINGS[ sampler.wrapS ] || RepeatWrapping;
+                texture.wrapT = WEBGL_WRAPPINGS[ sampler.wrapT ] || RepeatWrapping;
+
+                parser.associations.set( texture, { textures: textureIndex } );
+
+                return texture;
+
+            } ).catch( function () {
+
+                return null;
+
+            } );
+
+            this.textureCache[ cacheKey ] = promise;
+
+            return promise;
+
+        }
+
+        loadImageSource( sourceIndex, loader ) {
+
+            const parser = this;
+            const json = this.json;
+            const options = this.options;
+
+            if ( this.sourceCache[ sourceIndex ] !== undefined ) {
+
+                return this.sourceCache[ sourceIndex ].then( ( texture ) => texture.clone() );
+
+            }
+
+            const sourceDef = json.images[ sourceIndex ];
+
+            const URL = self.URL || self.webkitURL;
+
+            let sourceURI = sourceDef.uri || '';
+            let isObjectURL = false;
+
+            if ( sourceDef.bufferView !== undefined ) {
+
+                // Load binary image data from bufferView, if provided.
+
+                sourceURI = parser.getDependency( 'bufferView', sourceDef.bufferView ).then( function ( bufferView ) {
+
+                    isObjectURL = true;
+                    const blob = new Blob( [ bufferView ], { type: sourceDef.mimeType } );
+                    sourceURI = URL.createObjectURL( blob );
+                    return sourceURI;
+
+                } );
+
+            } else if ( sourceDef.uri === undefined ) {
+
+                throw new Error( 'THREE.GLTFLoader: Image ' + sourceIndex + ' is missing URI and bufferView' );
+
+            }
+
+            const promise = Promise.resolve( sourceURI ).then( function ( sourceURI ) {
+
+                return new Promise( function ( resolve, reject ) {
+
+                    let onLoad = resolve;
+
+                    if ( loader.isImageBitmapLoader === true ) {
+
+                        onLoad = function ( imageBitmap ) {
+
+                            const texture = new Texture( imageBitmap );
+                            texture.needsUpdate = true;
+
+                            resolve( texture );
+
+                        };
+
+                    }
+
+                    loader.load( LoaderUtils.resolveURL( sourceURI, options.path ), onLoad, undefined, reject );
+
+                } );
+
+            } ).then( function ( texture ) {
+
+                // Clean up resources and configure Texture.
+
+                if ( isObjectURL === true ) {
+
+                    URL.revokeObjectURL( sourceURI );
+
+                }
+
+                texture.userData.mimeType = sourceDef.mimeType || getImageURIMimeType( sourceDef.uri );
+
+                return texture;
+
+            } ).catch( function ( error ) {
+
+                console.error( 'THREE.GLTFLoader: Couldn\'t load texture', sourceURI );
+                throw error;
+
+            } );
+
+            this.sourceCache[ sourceIndex ] = promise;
+            return promise;
+
+        }
+
+        /**
+         * Asynchronously assigns a texture to the given material parameters.
+         * @param {Object} materialParams
+         * @param {string} mapName
+         * @param {Object} mapDef
+         * @return {Promise<Texture>}
+         */
+        assignTexture( materialParams, mapName, mapDef, encoding ) {
+
+            const parser = this;
+
+            return this.getDependency( 'texture', mapDef.index ).then( function ( texture ) {
+
+                // Materials sample aoMap from UV set 1 and other maps from UV set 0 - this can't be configured
+                // However, we will copy UV set 0 to UV set 1 on demand for aoMap
+                if ( mapDef.texCoord !== undefined && mapDef.texCoord != 0 && ! ( mapName === 'aoMap' && mapDef.texCoord == 1 ) ) {
+
+                    console.warn( 'THREE.GLTFLoader: Custom UV set ' + mapDef.texCoord + ' for texture ' + mapName + ' not yet supported.' );
+
+                }
+
+                if ( parser.extensions[ EXTENSIONS.KHR_TEXTURE_TRANSFORM ] ) {
+
+                    const transform = mapDef.extensions !== undefined ? mapDef.extensions[ EXTENSIONS.KHR_TEXTURE_TRANSFORM ] : undefined;
+
+                    if ( transform ) {
+
+                        const gltfReference = parser.associations.get( texture );
+                        texture = parser.extensions[ EXTENSIONS.KHR_TEXTURE_TRANSFORM ].extendTexture( texture, transform );
+                        parser.associations.set( texture, gltfReference );
+
+                    }
+
+                }
+
+                if ( encoding !== undefined ) {
+
+                    texture.encoding = encoding;
+
+                }
+
+                materialParams[ mapName ] = texture;
+
+                return texture;
+
+            } );
+
+        }
+
+        /**
+         * Assigns final material to a Mesh, Line, or Points instance. The instance
+         * already has a material (generated from the glTF material options alone)
+         * but reuse of the same glTF material may require multiple threejs materials
+         * to accommodate different primitive types, defines, etc. New materials will
+         * be created if necessary, and reused from a cache.
+         * @param  {Object3D} mesh Mesh, Line, or Points instance.
+         */
+        assignFinalMaterial( mesh ) {
+
+            const geometry = mesh.geometry;
+            let material = mesh.material;
+
+            const useDerivativeTangents = geometry.attributes.tangent === undefined;
+            const useVertexColors = geometry.attributes.color !== undefined;
+            const useFlatShading = geometry.attributes.normal === undefined;
+
+            if ( mesh.isPoints ) {
+
+                const cacheKey = 'PointsMaterial:' + material.uuid;
+
+                let pointsMaterial = this.cache.get( cacheKey );
+
+                if ( ! pointsMaterial ) {
+
+                    pointsMaterial = new PointsMaterial();
+                    Material.prototype.copy.call( pointsMaterial, material );
+                    pointsMaterial.color.copy( material.color );
+                    pointsMaterial.map = material.map;
+                    pointsMaterial.sizeAttenuation = false; // glTF spec says points should be 1px
+
+                    this.cache.add( cacheKey, pointsMaterial );
+
+                }
+
+                material = pointsMaterial;
+
+            } else if ( mesh.isLine ) {
+
+                const cacheKey = 'LineBasicMaterial:' + material.uuid;
+
+                let lineMaterial = this.cache.get( cacheKey );
+
+                if ( ! lineMaterial ) {
+
+                    lineMaterial = new LineBasicMaterial();
+                    Material.prototype.copy.call( lineMaterial, material );
+                    lineMaterial.color.copy( material.color );
+
+                    this.cache.add( cacheKey, lineMaterial );
+
+                }
+
+                material = lineMaterial;
+
+            }
+
+            // Clone the material if it will be modified
+            if ( useDerivativeTangents || useVertexColors || useFlatShading ) {
+
+                let cacheKey = 'ClonedMaterial:' + material.uuid + ':';
+
+                if ( material.isGLTFSpecularGlossinessMaterial ) cacheKey += 'specular-glossiness:';
+                if ( useDerivativeTangents ) cacheKey += 'derivative-tangents:';
+                if ( useVertexColors ) cacheKey += 'vertex-colors:';
+                if ( useFlatShading ) cacheKey += 'flat-shading:';
+
+                let cachedMaterial = this.cache.get( cacheKey );
+
+                if ( ! cachedMaterial ) {
+
+                    cachedMaterial = material.clone();
+
+                    if ( useVertexColors ) cachedMaterial.vertexColors = true;
+                    if ( useFlatShading ) cachedMaterial.flatShading = true;
+
+                    if ( useDerivativeTangents ) {
+
+                        // https://github.com/mrdoob/three.js/issues/11438#issuecomment-507003995
+                        if ( cachedMaterial.normalScale ) cachedMaterial.normalScale.y *= - 1;
+                        if ( cachedMaterial.clearcoatNormalScale ) cachedMaterial.clearcoatNormalScale.y *= - 1;
+
+                    }
+
+                    this.cache.add( cacheKey, cachedMaterial );
+
+                    this.associations.set( cachedMaterial, this.associations.get( material ) );
+
+                }
+
+                material = cachedMaterial;
+
+            }
+
+            // workarounds for mesh and geometry
+
+            if ( material.aoMap && geometry.attributes.uv2 === undefined && geometry.attributes.uv !== undefined ) {
+
+                geometry.setAttribute( 'uv2', geometry.attributes.uv );
+
+            }
+
+            mesh.material = material;
+
+        }
+
+        getMaterialType( /* materialIndex */ ) {
+
+            return MeshStandardMaterial;
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#materials
+         * @param {number} materialIndex
+         * @return {Promise<Material>}
+         */
+        loadMaterial( materialIndex ) {
+
+            const parser = this;
+            const json = this.json;
+            const extensions = this.extensions;
+            const materialDef = json.materials[ materialIndex ];
+
+            let materialType;
+            const materialParams = {};
+            const materialExtensions = materialDef.extensions || {};
+
+            const pending = [];
+
+            if ( materialExtensions[ EXTENSIONS.KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS ] ) {
+
+                const sgExtension = extensions[ EXTENSIONS.KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS ];
+                materialType = sgExtension.getMaterialType();
+                pending.push( sgExtension.extendParams( materialParams, materialDef, parser ) );
+
+            } else if ( materialExtensions[ EXTENSIONS.KHR_MATERIALS_UNLIT ] ) {
+
+                const kmuExtension = extensions[ EXTENSIONS.KHR_MATERIALS_UNLIT ];
+                materialType = kmuExtension.getMaterialType();
+                pending.push( kmuExtension.extendParams( materialParams, materialDef, parser ) );
+
+            } else {
+
+                // Specification:
+                // https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#metallic-roughness-material
+
+                const metallicRoughness = materialDef.pbrMetallicRoughness || {};
+
+                materialParams.color = new Color( 1.0, 1.0, 1.0 );
+                materialParams.opacity = 1.0;
+
+                if ( Array.isArray( metallicRoughness.baseColorFactor ) ) {
+
+                    const array = metallicRoughness.baseColorFactor;
+
+                    materialParams.color.fromArray( array );
+                    materialParams.opacity = array[ 3 ];
+
+                }
+
+                if ( metallicRoughness.baseColorTexture !== undefined ) {
+
+                    pending.push( parser.assignTexture( materialParams, 'map', metallicRoughness.baseColorTexture, sRGBEncoding ) );
+
+                }
+
+                materialParams.metalness = metallicRoughness.metallicFactor !== undefined ? metallicRoughness.metallicFactor : 1.0;
+                materialParams.roughness = metallicRoughness.roughnessFactor !== undefined ? metallicRoughness.roughnessFactor : 1.0;
+
+                if ( metallicRoughness.metallicRoughnessTexture !== undefined ) {
+
+                    pending.push( parser.assignTexture( materialParams, 'metalnessMap', metallicRoughness.metallicRoughnessTexture ) );
+                    pending.push( parser.assignTexture( materialParams, 'roughnessMap', metallicRoughness.metallicRoughnessTexture ) );
+
+                }
+
+                materialType = this._invokeOne( function ( ext ) {
+
+                    return ext.getMaterialType && ext.getMaterialType( materialIndex );
+
+                } );
+
+                pending.push( Promise.all( this._invokeAll( function ( ext ) {
+
+                    return ext.extendMaterialParams && ext.extendMaterialParams( materialIndex, materialParams );
+
+                } ) ) );
+
+            }
+
+            if ( materialDef.doubleSided === true ) {
+
+                materialParams.side = DoubleSide;
+
+            }
+
+            const alphaMode = materialDef.alphaMode || ALPHA_MODES.OPAQUE;
+
+            if ( alphaMode === ALPHA_MODES.BLEND ) {
+
+                materialParams.transparent = true;
+
+                // See: https://github.com/mrdoob/three.js/issues/17706
+                materialParams.depthWrite = false;
+
+            } else {
+
+                materialParams.transparent = false;
+
+                if ( alphaMode === ALPHA_MODES.MASK ) {
+
+                    materialParams.alphaTest = materialDef.alphaCutoff !== undefined ? materialDef.alphaCutoff : 0.5;
+
+                }
+
+            }
+
+            if ( materialDef.normalTexture !== undefined && materialType !== MeshBasicMaterial ) {
+
+                pending.push( parser.assignTexture( materialParams, 'normalMap', materialDef.normalTexture ) );
+
+                materialParams.normalScale = new Vector2( 1, 1 );
+
+                if ( materialDef.normalTexture.scale !== undefined ) {
+
+                    const scale = materialDef.normalTexture.scale;
+
+                    materialParams.normalScale.set( scale, scale );
+
+                }
+
+            }
+
+            if ( materialDef.occlusionTexture !== undefined && materialType !== MeshBasicMaterial ) {
+
+                pending.push( parser.assignTexture( materialParams, 'aoMap', materialDef.occlusionTexture ) );
+
+                if ( materialDef.occlusionTexture.strength !== undefined ) {
+
+                    materialParams.aoMapIntensity = materialDef.occlusionTexture.strength;
+
+                }
+
+            }
+
+            if ( materialDef.emissiveFactor !== undefined && materialType !== MeshBasicMaterial ) {
+
+                materialParams.emissive = new Color().fromArray( materialDef.emissiveFactor );
+
+            }
+
+            if ( materialDef.emissiveTexture !== undefined && materialType !== MeshBasicMaterial ) {
+
+                pending.push( parser.assignTexture( materialParams, 'emissiveMap', materialDef.emissiveTexture, sRGBEncoding ) );
+
+            }
+
+            return Promise.all( pending ).then( function () {
+
+                let material;
+
+                if ( materialType === GLTFMeshStandardSGMaterial ) {
+
+                    material = extensions[ EXTENSIONS.KHR_MATERIALS_PBR_SPECULAR_GLOSSINESS ].createMaterial( materialParams );
+
+                } else {
+
+                    material = new materialType( materialParams );
+
+                }
+
+                if ( materialDef.name ) material.name = materialDef.name;
+
+                assignExtrasToUserData( material, materialDef );
+
+                parser.associations.set( material, { materials: materialIndex } );
+
+                if ( materialDef.extensions ) addUnknownExtensionsToUserData( extensions, material, materialDef );
+
+                return material;
+
+            } );
+
+        }
+
+        /** When Object3D instances are targeted by animation, they need unique names. */
+        createUniqueName( originalName ) {
+
+            const sanitizedName = PropertyBinding.sanitizeNodeName( originalName || '' );
+
+            let name = sanitizedName;
+
+            for ( let i = 1; this.nodeNamesUsed[ name ]; ++ i ) {
+
+                name = sanitizedName + '_' + i;
+
+            }
+
+            this.nodeNamesUsed[ name ] = true;
+
+            return name;
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#geometry
+         *
+         * Creates BufferGeometries from primitives.
+         *
+         * @param {Array<GLTF.Primitive>} primitives
+         * @return {Promise<Array<BufferGeometry>>}
+         */
+        loadGeometries( primitives ) {
+
+            const parser = this;
+            const extensions = this.extensions;
+            const cache = this.primitiveCache;
+
+            function createDracoPrimitive( primitive ) {
+
+                return extensions[ EXTENSIONS.KHR_DRACO_MESH_COMPRESSION ]
+                    .decodePrimitive( primitive, parser )
+                    .then( function ( geometry ) {
+
+                        return addPrimitiveAttributes( geometry, primitive, parser );
+
+                    } );
+
+            }
+
+            const pending = [];
+
+            for ( let i = 0, il = primitives.length; i < il; i ++ ) {
+
+                const primitive = primitives[ i ];
+                const cacheKey = createPrimitiveKey( primitive );
+
+                // See if we've already created this geometry
+                const cached = cache[ cacheKey ];
+
+                if ( cached ) {
+
+                    // Use the cached geometry if it exists
+                    pending.push( cached.promise );
+
+                } else {
+
+                    let geometryPromise;
+
+                    if ( primitive.extensions && primitive.extensions[ EXTENSIONS.KHR_DRACO_MESH_COMPRESSION ] ) {
+
+                        // Use DRACO geometry if available
+                        geometryPromise = createDracoPrimitive( primitive );
+
+                    } else {
+
+                        // Otherwise create a new geometry
+                        geometryPromise = addPrimitiveAttributes( new BufferGeometry(), primitive, parser );
+
+                    }
+
+                    // Cache this geometry
+                    cache[ cacheKey ] = { primitive: primitive, promise: geometryPromise };
+
+                    pending.push( geometryPromise );
+
+                }
+
+            }
+
+            return Promise.all( pending );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#meshes
+         * @param {number} meshIndex
+         * @return {Promise<Group|Mesh|SkinnedMesh>}
+         */
+        loadMesh( meshIndex ) {
+
+            const parser = this;
+            const json = this.json;
+            const extensions = this.extensions;
+
+            const meshDef = json.meshes[ meshIndex ];
+            const primitives = meshDef.primitives;
+
+            const pending = [];
+
+            for ( let i = 0, il = primitives.length; i < il; i ++ ) {
+
+                const material = primitives[ i ].material === undefined
+                    ? createDefaultMaterial( this.cache )
+                    : this.getDependency( 'material', primitives[ i ].material );
+
+                pending.push( material );
+
+            }
+
+            pending.push( parser.loadGeometries( primitives ) );
+
+            return Promise.all( pending ).then( function ( results ) {
+
+                const materials = results.slice( 0, results.length - 1 );
+                const geometries = results[ results.length - 1 ];
+
+                const meshes = [];
+
+                for ( let i = 0, il = geometries.length; i < il; i ++ ) {
+
+                    const geometry = geometries[ i ];
+                    const primitive = primitives[ i ];
+
+                    // 1. create Mesh
+
+                    let mesh;
+
+                    const material = materials[ i ];
+
+                    if ( primitive.mode === WEBGL_CONSTANTS.TRIANGLES ||
+                            primitive.mode === WEBGL_CONSTANTS.TRIANGLE_STRIP ||
+                            primitive.mode === WEBGL_CONSTANTS.TRIANGLE_FAN ||
+                            primitive.mode === undefined ) {
+
+                        // .isSkinnedMesh isn't in glTF spec. See ._markDefs()
+                        mesh = meshDef.isSkinnedMesh === true
+                            ? new SkinnedMesh( geometry, material )
+                            : new Mesh( geometry, material );
+
+                        if ( mesh.isSkinnedMesh === true && ! mesh.geometry.attributes.skinWeight.normalized ) {
+
+                            // we normalize floating point skin weight array to fix malformed assets (see #15319)
+                            // it's important to skip this for non-float32 data since normalizeSkinWeights assumes non-normalized inputs
+                            mesh.normalizeSkinWeights();
+
+                        }
+
+                        if ( primitive.mode === WEBGL_CONSTANTS.TRIANGLE_STRIP ) {
+
+                            mesh.geometry = toTrianglesDrawMode( mesh.geometry, TriangleStripDrawMode );
+
+                        } else if ( primitive.mode === WEBGL_CONSTANTS.TRIANGLE_FAN ) {
+
+                            mesh.geometry = toTrianglesDrawMode( mesh.geometry, TriangleFanDrawMode );
+
+                        }
+
+                    } else if ( primitive.mode === WEBGL_CONSTANTS.LINES ) {
+
+                        mesh = new LineSegments( geometry, material );
+
+                    } else if ( primitive.mode === WEBGL_CONSTANTS.LINE_STRIP ) {
+
+                        mesh = new Line( geometry, material );
+
+                    } else if ( primitive.mode === WEBGL_CONSTANTS.LINE_LOOP ) {
+
+                        mesh = new LineLoop( geometry, material );
+
+                    } else if ( primitive.mode === WEBGL_CONSTANTS.POINTS ) {
+
+                        mesh = new Points( geometry, material );
+
+                    } else {
+
+                        throw new Error( 'THREE.GLTFLoader: Primitive mode unsupported: ' + primitive.mode );
+
+                    }
+
+                    if ( Object.keys( mesh.geometry.morphAttributes ).length > 0 ) {
+
+                        updateMorphTargets( mesh, meshDef );
+
+                    }
+
+                    mesh.name = parser.createUniqueName( meshDef.name || ( 'mesh_' + meshIndex ) );
+
+                    assignExtrasToUserData( mesh, meshDef );
+
+                    if ( primitive.extensions ) addUnknownExtensionsToUserData( extensions, mesh, primitive );
+
+                    parser.assignFinalMaterial( mesh );
+
+                    meshes.push( mesh );
+
+                }
+
+                for ( let i = 0, il = meshes.length; i < il; i ++ ) {
+
+                    parser.associations.set( meshes[ i ], {
+                        meshes: meshIndex,
+                        primitives: i
+                    } );
+
+                }
+
+                if ( meshes.length === 1 ) {
+
+                    return meshes[ 0 ];
+
+                }
+
+                const group = new Group();
+
+                parser.associations.set( group, { meshes: meshIndex } );
+
+                for ( let i = 0, il = meshes.length; i < il; i ++ ) {
+
+                    group.add( meshes[ i ] );
+
+                }
+
+                return group;
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#cameras
+         * @param {number} cameraIndex
+         * @return {Promise<THREE.Camera>}
+         */
+        loadCamera( cameraIndex ) {
+
+            let camera;
+            const cameraDef = this.json.cameras[ cameraIndex ];
+            const params = cameraDef[ cameraDef.type ];
+
+            if ( ! params ) {
+
+                console.warn( 'THREE.GLTFLoader: Missing camera parameters.' );
+                return;
+
+            }
+
+            if ( cameraDef.type === 'perspective' ) {
+
+                camera = new PerspectiveCamera( MathUtils.radToDeg( params.yfov ), params.aspectRatio || 1, params.znear || 1, params.zfar || 2e6 );
+
+            } else if ( cameraDef.type === 'orthographic' ) {
+
+                camera = new OrthographicCamera( - params.xmag, params.xmag, params.ymag, - params.ymag, params.znear, params.zfar );
+
+            }
+
+            if ( cameraDef.name ) camera.name = this.createUniqueName( cameraDef.name );
+
+            assignExtrasToUserData( camera, cameraDef );
+
+            return Promise.resolve( camera );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#skins
+         * @param {number} skinIndex
+         * @return {Promise<Object>}
+         */
+        loadSkin( skinIndex ) {
+
+            const skinDef = this.json.skins[ skinIndex ];
+
+            const skinEntry = { joints: skinDef.joints };
+
+            if ( skinDef.inverseBindMatrices === undefined ) {
+
+                return Promise.resolve( skinEntry );
+
+            }
+
+            return this.getDependency( 'accessor', skinDef.inverseBindMatrices ).then( function ( accessor ) {
+
+                skinEntry.inverseBindMatrices = accessor;
+
+                return skinEntry;
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#animations
+         * @param {number} animationIndex
+         * @return {Promise<AnimationClip>}
+         */
+        loadAnimation( animationIndex ) {
+
+            const json = this.json;
+
+            const animationDef = json.animations[ animationIndex ];
+
+            const pendingNodes = [];
+            const pendingInputAccessors = [];
+            const pendingOutputAccessors = [];
+            const pendingSamplers = [];
+            const pendingTargets = [];
+
+            for ( let i = 0, il = animationDef.channels.length; i < il; i ++ ) {
+
+                const channel = animationDef.channels[ i ];
+                const sampler = animationDef.samplers[ channel.sampler ];
+                const target = channel.target;
+                const name = target.node !== undefined ? target.node : target.id; // NOTE: target.id is deprecated.
+                const input = animationDef.parameters !== undefined ? animationDef.parameters[ sampler.input ] : sampler.input;
+                const output = animationDef.parameters !== undefined ? animationDef.parameters[ sampler.output ] : sampler.output;
+
+                pendingNodes.push( this.getDependency( 'node', name ) );
+                pendingInputAccessors.push( this.getDependency( 'accessor', input ) );
+                pendingOutputAccessors.push( this.getDependency( 'accessor', output ) );
+                pendingSamplers.push( sampler );
+                pendingTargets.push( target );
+
+            }
+
+            return Promise.all( [
+
+                Promise.all( pendingNodes ),
+                Promise.all( pendingInputAccessors ),
+                Promise.all( pendingOutputAccessors ),
+                Promise.all( pendingSamplers ),
+                Promise.all( pendingTargets )
+
+            ] ).then( function ( dependencies ) {
+
+                const nodes = dependencies[ 0 ];
+                const inputAccessors = dependencies[ 1 ];
+                const outputAccessors = dependencies[ 2 ];
+                const samplers = dependencies[ 3 ];
+                const targets = dependencies[ 4 ];
+
+                const tracks = [];
+
+                for ( let i = 0, il = nodes.length; i < il; i ++ ) {
+
+                    const node = nodes[ i ];
+                    const inputAccessor = inputAccessors[ i ];
+                    const outputAccessor = outputAccessors[ i ];
+                    const sampler = samplers[ i ];
+                    const target = targets[ i ];
+
+                    if ( node === undefined ) continue;
+
+                    node.updateMatrix();
+                    node.matrixAutoUpdate = true;
+
+                    let TypedKeyframeTrack;
+
+                    switch ( PATH_PROPERTIES[ target.path ] ) {
+
+                        case PATH_PROPERTIES.weights:
+
+                            TypedKeyframeTrack = NumberKeyframeTrack;
+                            break;
+
+                        case PATH_PROPERTIES.rotation:
+
+                            TypedKeyframeTrack = QuaternionKeyframeTrack;
+                            break;
+
+                        case PATH_PROPERTIES.position:
+                        case PATH_PROPERTIES.scale:
+                        default:
+
+                            TypedKeyframeTrack = VectorKeyframeTrack;
+                            break;
+
+                    }
+
+                    const targetName = node.name ? node.name : node.uuid;
+
+                    const interpolation = sampler.interpolation !== undefined ? INTERPOLATION[ sampler.interpolation ] : InterpolateLinear;
+
+                    const targetNames = [];
+
+                    if ( PATH_PROPERTIES[ target.path ] === PATH_PROPERTIES.weights ) {
+
+                        node.traverse( function ( object ) {
+
+                            if ( object.morphTargetInfluences ) {
+
+                                targetNames.push( object.name ? object.name : object.uuid );
+
+                            }
+
+                        } );
+
+                    } else {
+
+                        targetNames.push( targetName );
+
+                    }
+
+                    let outputArray = outputAccessor.array;
+
+                    if ( outputAccessor.normalized ) {
+
+                        const scale = getNormalizedComponentScale( outputArray.constructor );
+                        const scaled = new Float32Array( outputArray.length );
+
+                        for ( let j = 0, jl = outputArray.length; j < jl; j ++ ) {
+
+                            scaled[ j ] = outputArray[ j ] * scale;
+
+                        }
+
+                        outputArray = scaled;
+
+                    }
+
+                    for ( let j = 0, jl = targetNames.length; j < jl; j ++ ) {
+
+                        const track = new TypedKeyframeTrack(
+                            targetNames[ j ] + '.' + PATH_PROPERTIES[ target.path ],
+                            inputAccessor.array,
+                            outputArray,
+                            interpolation
+                        );
+
+                        // Override interpolation with custom factory method.
+                        if ( sampler.interpolation === 'CUBICSPLINE' ) {
+
+                            track.createInterpolant = function InterpolantFactoryMethodGLTFCubicSpline( result ) {
+
+                                // A CUBICSPLINE keyframe in glTF has three output values for each input value,
+                                // representing inTangent, splineVertex, and outTangent. As a result, track.getValueSize()
+                                // must be divided by three to get the interpolant's sampleSize argument.
+
+                                const interpolantType = ( this instanceof QuaternionKeyframeTrack ) ? GLTFCubicSplineQuaternionInterpolant : GLTFCubicSplineInterpolant;
+
+                                return new interpolantType( this.times, this.values, this.getValueSize() / 3, result );
+
+                            };
+
+                            // Mark as CUBICSPLINE. `track.getInterpolation()` doesn't support custom interpolants.
+                            track.createInterpolant.isInterpolantFactoryMethodGLTFCubicSpline = true;
+
+                        }
+
+                        tracks.push( track );
+
+                    }
+
+                }
+
+                const name = animationDef.name ? animationDef.name : 'animation_' + animationIndex;
+
+                return new AnimationClip( name, undefined, tracks );
+
+            } );
+
+        }
+
+        createNodeMesh( nodeIndex ) {
+
+            const json = this.json;
+            const parser = this;
+            const nodeDef = json.nodes[ nodeIndex ];
+
+            if ( nodeDef.mesh === undefined ) return null;
+
+            return parser.getDependency( 'mesh', nodeDef.mesh ).then( function ( mesh ) {
+
+                const node = parser._getNodeRef( parser.meshCache, nodeDef.mesh, mesh );
+
+                // if weights are provided on the node, override weights on the mesh.
+                if ( nodeDef.weights !== undefined ) {
+
+                    node.traverse( function ( o ) {
+
+                        if ( ! o.isMesh ) return;
+
+                        for ( let i = 0, il = nodeDef.weights.length; i < il; i ++ ) {
+
+                            o.morphTargetInfluences[ i ] = nodeDef.weights[ i ];
+
+                        }
+
+                    } );
+
+                }
+
+                return node;
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#nodes-and-hierarchy
+         * @param {number} nodeIndex
+         * @return {Promise<Object3D>}
+         */
+        loadNode( nodeIndex ) {
+
+            const json = this.json;
+            const extensions = this.extensions;
+            const parser = this;
+
+            const nodeDef = json.nodes[ nodeIndex ];
+
+            // reserve node's name before its dependencies, so the root has the intended name.
+            const nodeName = nodeDef.name ? parser.createUniqueName( nodeDef.name ) : '';
+
+            return ( function () {
+
+                const pending = [];
+
+                const meshPromise = parser._invokeOne( function ( ext ) {
+
+                    return ext.createNodeMesh && ext.createNodeMesh( nodeIndex );
+
+                } );
+
+                if ( meshPromise ) {
+
+                    pending.push( meshPromise );
+
+                }
+
+                if ( nodeDef.camera !== undefined ) {
+
+                    pending.push( parser.getDependency( 'camera', nodeDef.camera ).then( function ( camera ) {
+
+                        return parser._getNodeRef( parser.cameraCache, nodeDef.camera, camera );
+
+                    } ) );
+
+                }
+
+                parser._invokeAll( function ( ext ) {
+
+                    return ext.createNodeAttachment && ext.createNodeAttachment( nodeIndex );
+
+                } ).forEach( function ( promise ) {
+
+                    pending.push( promise );
+
+                } );
+
+                return Promise.all( pending );
+
+            }() ).then( function ( objects ) {
+
+                let node;
+
+                // .isBone isn't in glTF spec. See ._markDefs
+                if ( nodeDef.isBone === true ) {
+
+                    node = new Bone();
+
+                } else if ( objects.length > 1 ) {
+
+                    node = new Group();
+
+                } else if ( objects.length === 1 ) {
+
+                    node = objects[ 0 ];
+
+                } else {
+
+                    node = new Object3D();
+
+                }
+
+                if ( node !== objects[ 0 ] ) {
+
+                    for ( let i = 0, il = objects.length; i < il; i ++ ) {
+
+                        node.add( objects[ i ] );
+
+                    }
+
+                }
+
+                if ( nodeDef.name ) {
+
+                    node.userData.name = nodeDef.name;
+                    node.name = nodeName;
+
+                }
+
+                assignExtrasToUserData( node, nodeDef );
+
+                if ( nodeDef.extensions ) addUnknownExtensionsToUserData( extensions, node, nodeDef );
+
+                if ( nodeDef.matrix !== undefined ) {
+
+                    const matrix = new Matrix4();
+                    matrix.fromArray( nodeDef.matrix );
+                    node.applyMatrix4( matrix );
+
+                } else {
+
+                    if ( nodeDef.translation !== undefined ) {
+
+                        node.position.fromArray( nodeDef.translation );
+
+                    }
+
+                    if ( nodeDef.rotation !== undefined ) {
+
+                        node.quaternion.fromArray( nodeDef.rotation );
+
+                    }
+
+                    if ( nodeDef.scale !== undefined ) {
+
+                        node.scale.fromArray( nodeDef.scale );
+
+                    }
+
+                }
+
+                if ( ! parser.associations.has( node ) ) {
+
+                    parser.associations.set( node, {} );
+
+                }
+
+                parser.associations.get( node ).nodes = nodeIndex;
+
+                return node;
+
+            } );
+
+        }
+
+        /**
+         * Specification: https://github.com/KhronosGroup/glTF/tree/master/specification/2.0#scenes
+         * @param {number} sceneIndex
+         * @return {Promise<Group>}
+         */
+        loadScene( sceneIndex ) {
+
+            const json = this.json;
+            const extensions = this.extensions;
+            const sceneDef = this.json.scenes[ sceneIndex ];
+            const parser = this;
+
+            // Loader returns Group, not Scene.
+            // See: https://github.com/mrdoob/three.js/issues/18342#issuecomment-578981172
+            const scene = new Group();
+            if ( sceneDef.name ) scene.name = parser.createUniqueName( sceneDef.name );
+
+            assignExtrasToUserData( scene, sceneDef );
+
+            if ( sceneDef.extensions ) addUnknownExtensionsToUserData( extensions, scene, sceneDef );
+
+            const nodeIds = sceneDef.nodes || [];
+
+            const pending = [];
+
+            for ( let i = 0, il = nodeIds.length; i < il; i ++ ) {
+
+                pending.push( buildNodeHierarchy( nodeIds[ i ], scene, json, parser ) );
+
+            }
+
+            return Promise.all( pending ).then( function () {
+
+                // Removes dangling associations, associations that reference a node that
+                // didn't make it into the scene.
+                const reduceAssociations = ( node ) => {
+
+                    const reducedAssociations = new Map();
+
+                    for ( const [ key, value ] of parser.associations ) {
+
+                        if ( key instanceof Material || key instanceof Texture ) {
+
+                            reducedAssociations.set( key, value );
+
+                        }
+
+                    }
+
+                    node.traverse( ( node ) => {
+
+                        const mappings = parser.associations.get( node );
+
+                        if ( mappings != null ) {
+
+                            reducedAssociations.set( node, mappings );
+
+                        }
+
+                    } );
+
+                    return reducedAssociations;
+
+                };
+
+                parser.associations = reduceAssociations( scene );
+
+                return scene;
+
+            } );
+
+        }
+
+    }
+
+    function buildNodeHierarchy( nodeId, parentObject, json, parser ) {
+
+        const nodeDef = json.nodes[ nodeId ];
+
+        return parser.getDependency( 'node', nodeId ).then( function ( node ) {
+
+            if ( nodeDef.skin === undefined ) return node;
+
+            // build skeleton here as well
+
+            let skinEntry;
+
+            return parser.getDependency( 'skin', nodeDef.skin ).then( function ( skin ) {
+
+                skinEntry = skin;
+
+                const pendingJoints = [];
+
+                for ( let i = 0, il = skinEntry.joints.length; i < il; i ++ ) {
+
+                    pendingJoints.push( parser.getDependency( 'node', skinEntry.joints[ i ] ) );
+
+                }
+
+                return Promise.all( pendingJoints );
+
+            } ).then( function ( jointNodes ) {
+
+                node.traverse( function ( mesh ) {
+
+                    if ( ! mesh.isMesh ) return;
+
+                    const bones = [];
+                    const boneInverses = [];
+
+                    for ( let j = 0, jl = jointNodes.length; j < jl; j ++ ) {
+
+                        const jointNode = jointNodes[ j ];
+
+                        if ( jointNode ) {
+
+                            bones.push( jointNode );
+
+                            const mat = new Matrix4();
+
+                            if ( skinEntry.inverseBindMatrices !== undefined ) {
+
+                                mat.fromArray( skinEntry.inverseBindMatrices.array, j * 16 );
+
+                            }
+
+                            boneInverses.push( mat );
+
+                        } else {
+
+                            console.warn( 'THREE.GLTFLoader: Joint "%s" could not be found.', skinEntry.joints[ j ] );
+
+                        }
+
+                    }
+
+                    mesh.bind( new Skeleton( bones, boneInverses ), mesh.matrixWorld );
+
+                } );
+
+                return node;
+
+            } );
+
+        } ).then( function ( node ) {
+
+            // build node hierachy
+
+            parentObject.add( node );
+
+            const pending = [];
+
+            if ( nodeDef.children ) {
+
+                const children = nodeDef.children;
+
+                for ( let i = 0, il = children.length; i < il; i ++ ) {
+
+                    const child = children[ i ];
+                    pending.push( buildNodeHierarchy( child, node, json, parser ) );
+
+                }
+
+            }
+
+            return Promise.all( pending );
+
+        } );
+
+    }
+
+    /**
+     * @param {BufferGeometry} geometry
+     * @param {GLTF.Primitive} primitiveDef
+     * @param {GLTFParser} parser
+     */
+    function computeBounds( geometry, primitiveDef, parser ) {
+
+        const attributes = primitiveDef.attributes;
+
+        const box = new Box3();
+
+        if ( attributes.POSITION !== undefined ) {
+
+            const accessor = parser.json.accessors[ attributes.POSITION ];
+
+            const min = accessor.min;
+            const max = accessor.max;
+
+            // glTF requires 'min' and 'max', but VRM (which extends glTF) currently ignores that requirement.
+
+            if ( min !== undefined && max !== undefined ) {
+
+                box.set(
+                    new Vector3( min[ 0 ], min[ 1 ], min[ 2 ] ),
+                    new Vector3( max[ 0 ], max[ 1 ], max[ 2 ] )
+                );
+
+                if ( accessor.normalized ) {
+
+                    const boxScale = getNormalizedComponentScale( WEBGL_COMPONENT_TYPES[ accessor.componentType ] );
+                    box.min.multiplyScalar( boxScale );
+                    box.max.multiplyScalar( boxScale );
+
+                }
+
+            } else {
+
+                console.warn( 'THREE.GLTFLoader: Missing min/max properties for accessor POSITION.' );
+
+                return;
+
+            }
+
+        } else {
+
+            return;
+
+        }
+
+        const targets = primitiveDef.targets;
+
+        if ( targets !== undefined ) {
+
+            const maxDisplacement = new Vector3();
+            const vector = new Vector3();
+
+            for ( let i = 0, il = targets.length; i < il; i ++ ) {
+
+                const target = targets[ i ];
+
+                if ( target.POSITION !== undefined ) {
+
+                    const accessor = parser.json.accessors[ target.POSITION ];
+                    const min = accessor.min;
+                    const max = accessor.max;
+
+                    // glTF requires 'min' and 'max', but VRM (which extends glTF) currently ignores that requirement.
+
+                    if ( min !== undefined && max !== undefined ) {
+
+                        // we need to get max of absolute components because target weight is [-1,1]
+                        vector.setX( Math.max( Math.abs( min[ 0 ] ), Math.abs( max[ 0 ] ) ) );
+                        vector.setY( Math.max( Math.abs( min[ 1 ] ), Math.abs( max[ 1 ] ) ) );
+                        vector.setZ( Math.max( Math.abs( min[ 2 ] ), Math.abs( max[ 2 ] ) ) );
+
+
+                        if ( accessor.normalized ) {
+
+                            const boxScale = getNormalizedComponentScale( WEBGL_COMPONENT_TYPES[ accessor.componentType ] );
+                            vector.multiplyScalar( boxScale );
+
+                        }
+
+                        // Note: this assumes that the sum of all weights is at most 1. This isn't quite correct - it's more conservative
+                        // to assume that each target can have a max weight of 1. However, for some use cases - notably, when morph targets
+                        // are used to implement key-frame animations and as such only two are active at a time - this results in very large
+                        // boxes. So for now we make a box that's sometimes a touch too small but is hopefully mostly of reasonable size.
+                        maxDisplacement.max( vector );
+
+                    } else {
+
+                        console.warn( 'THREE.GLTFLoader: Missing min/max properties for accessor POSITION.' );
+
+                    }
+
+                }
+
+            }
+
+            // As per comment above this box isn't conservative, but has a reasonable size for a very large number of morph targets.
+            box.expandByVector( maxDisplacement );
+
+        }
+
+        geometry.boundingBox = box;
+
+        const sphere = new Sphere();
+
+        box.getCenter( sphere.center );
+        sphere.radius = box.min.distanceTo( box.max ) / 2;
+
+        geometry.boundingSphere = sphere;
+
+    }
+
+    /**
+     * @param {BufferGeometry} geometry
+     * @param {GLTF.Primitive} primitiveDef
+     * @param {GLTFParser} parser
+     * @return {Promise<BufferGeometry>}
+     */
+    function addPrimitiveAttributes( geometry, primitiveDef, parser ) {
+
+        const attributes = primitiveDef.attributes;
+
+        const pending = [];
+
+        function assignAttributeAccessor( accessorIndex, attributeName ) {
+
+            return parser.getDependency( 'accessor', accessorIndex )
+                .then( function ( accessor ) {
+
+                    geometry.setAttribute( attributeName, accessor );
+
+                } );
+
+        }
+
+        for ( const gltfAttributeName in attributes ) {
+
+            const threeAttributeName = ATTRIBUTES[ gltfAttributeName ] || gltfAttributeName.toLowerCase();
+
+            // Skip attributes already provided by e.g. Draco extension.
+            if ( threeAttributeName in geometry.attributes ) continue;
+
+            pending.push( assignAttributeAccessor( attributes[ gltfAttributeName ], threeAttributeName ) );
+
+        }
+
+        if ( primitiveDef.indices !== undefined && ! geometry.index ) {
+
+            const accessor = parser.getDependency( 'accessor', primitiveDef.indices ).then( function ( accessor ) {
+
+                geometry.setIndex( accessor );
+
+            } );
+
+            pending.push( accessor );
+
+        }
+
+        assignExtrasToUserData( geometry, primitiveDef );
+
+        computeBounds( geometry, primitiveDef, parser );
+
+        return Promise.all( pending ).then( function () {
+
+            return primitiveDef.targets !== undefined
+                ? addMorphTargets( geometry, primitiveDef.targets, parser )
+                : geometry;
+
+        } );
+
+    }
+
+    /**
+     * @param {BufferGeometry} geometry
+     * @param {Number} drawMode
+     * @return {BufferGeometry}
+     */
+    function toTrianglesDrawMode( geometry, drawMode ) {
+
+        let index = geometry.getIndex();
+
+        // generate index if not present
+
+        if ( index === null ) {
+
+            const indices = [];
+
+            const position = geometry.getAttribute( 'position' );
+
+            if ( position !== undefined ) {
+
+                for ( let i = 0; i < position.count; i ++ ) {
+
+                    indices.push( i );
+
+                }
+
+                geometry.setIndex( indices );
+                index = geometry.getIndex();
+
+            } else {
+
+                console.error( 'THREE.GLTFLoader.toTrianglesDrawMode(): Undefined position attribute. Processing not possible.' );
+                return geometry;
+
+            }
+
+        }
+
+        //
+
+        const numberOfTriangles = index.count - 2;
+        const newIndices = [];
+
+        if ( drawMode === TriangleFanDrawMode ) {
+
+            // gl.TRIANGLE_FAN
+
+            for ( let i = 1; i <= numberOfTriangles; i ++ ) {
+
+                newIndices.push( index.getX( 0 ) );
+                newIndices.push( index.getX( i ) );
+                newIndices.push( index.getX( i + 1 ) );
+
+            }
+
+        } else {
+
+            // gl.TRIANGLE_STRIP
+
+            for ( let i = 0; i < numberOfTriangles; i ++ ) {
+
+                if ( i % 2 === 0 ) {
+
+                    newIndices.push( index.getX( i ) );
+                    newIndices.push( index.getX( i + 1 ) );
+                    newIndices.push( index.getX( i + 2 ) );
+
+
+                } else {
+
+                    newIndices.push( index.getX( i + 2 ) );
+                    newIndices.push( index.getX( i + 1 ) );
+                    newIndices.push( index.getX( i ) );
+
+                }
+
+            }
+
+        }
+
+        if ( ( newIndices.length / 3 ) !== numberOfTriangles ) {
+
+            console.error( 'THREE.GLTFLoader.toTrianglesDrawMode(): Unable to generate correct amount of triangles.' );
+
+        }
+
+        // build final geometry
+
+        const newGeometry = geometry.clone();
+        newGeometry.setIndex( newIndices );
+
+        return newGeometry;
+
+    }
+
+    /**
+     * @webxr-input-profiles/motion-controllers 1.0.0 https://github.com/immersive-web/webxr-input-profiles
+     */
+
+    const Constants = {
+      Handedness: Object.freeze({
+        NONE: 'none',
+        LEFT: 'left',
+        RIGHT: 'right'
+      }),
+
+      ComponentState: Object.freeze({
+        DEFAULT: 'default',
+        TOUCHED: 'touched',
+        PRESSED: 'pressed'
+      }),
+
+      ComponentProperty: Object.freeze({
+        BUTTON: 'button',
+        X_AXIS: 'xAxis',
+        Y_AXIS: 'yAxis',
+        STATE: 'state'
+      }),
+
+      ComponentType: Object.freeze({
+        TRIGGER: 'trigger',
+        SQUEEZE: 'squeeze',
+        TOUCHPAD: 'touchpad',
+        THUMBSTICK: 'thumbstick',
+        BUTTON: 'button'
+      }),
+
+      ButtonTouchThreshold: 0.05,
+
+      AxisTouchThreshold: 0.1,
+
+      VisualResponseProperty: Object.freeze({
+        TRANSFORM: 'transform',
+        VISIBILITY: 'visibility'
+      })
+    };
+
+    /**
+     * @description Static helper function to fetch a JSON file and turn it into a JS object
+     * @param {string} path - Path to JSON file to be fetched
+     */
+    async function fetchJsonFile(path) {
+      const response = await fetch(path);
+      if (!response.ok) {
+        throw new Error(response.statusText);
+      } else {
+        return response.json();
+      }
+    }
+
+    async function fetchProfilesList(basePath) {
+      if (!basePath) {
+        throw new Error('No basePath supplied');
+      }
+
+      const profileListFileName = 'profilesList.json';
+      const profilesList = await fetchJsonFile(`${basePath}/${profileListFileName}`);
+      return profilesList;
+    }
+
+    async function fetchProfile(xrInputSource, basePath, defaultProfile = null, getAssetPath = true) {
+      if (!xrInputSource) {
+        throw new Error('No xrInputSource supplied');
+      }
+
+      if (!basePath) {
+        throw new Error('No basePath supplied');
+      }
+
+      // Get the list of profiles
+      const supportedProfilesList = await fetchProfilesList(basePath);
+
+      // Find the relative path to the first requested profile that is recognized
+      let match;
+      xrInputSource.profiles.some((profileId) => {
+        const supportedProfile = supportedProfilesList[profileId];
+        if (supportedProfile) {
+          match = {
+            profileId,
+            profilePath: `${basePath}/${supportedProfile.path}`,
+            deprecated: !!supportedProfile.deprecated
+          };
+        }
+        return !!match;
+      });
+
+      if (!match) {
+        if (!defaultProfile) {
+          throw new Error('No matching profile name found');
+        }
+
+        const supportedProfile = supportedProfilesList[defaultProfile];
+        if (!supportedProfile) {
+          throw new Error(`No matching profile name found and default profile "${defaultProfile}" missing.`);
+        }
+
+        match = {
+          profileId: defaultProfile,
+          profilePath: `${basePath}/${supportedProfile.path}`,
+          deprecated: !!supportedProfile.deprecated
+        };
+      }
+
+      const profile = await fetchJsonFile(match.profilePath);
+
+      let assetPath;
+      if (getAssetPath) {
+        let layout;
+        if (xrInputSource.handedness === 'any') {
+          layout = profile.layouts[Object.keys(profile.layouts)[0]];
+        } else {
+          layout = profile.layouts[xrInputSource.handedness];
+        }
+        if (!layout) {
+          throw new Error(
+            `No matching handedness, ${xrInputSource.handedness}, in profile ${match.profileId}`
+          );
+        }
+
+        if (layout.assetPath) {
+          assetPath = match.profilePath.replace('profile.json', layout.assetPath);
+        }
+      }
+
+      return { profile, assetPath };
+    }
+
+    /** @constant {Object} */
+    const defaultComponentValues = {
+      xAxis: 0,
+      yAxis: 0,
+      button: 0,
+      state: Constants.ComponentState.DEFAULT
+    };
+
+    /**
+     * @description Converts an X, Y coordinate from the range -1 to 1 (as reported by the Gamepad
+     * API) to the range 0 to 1 (for interpolation). Also caps the X, Y values to be bounded within
+     * a circle. This ensures that thumbsticks are not animated outside the bounds of their physical
+     * range of motion and touchpads do not report touch locations off their physical bounds.
+     * @param {number} x The original x coordinate in the range -1 to 1
+     * @param {number} y The original y coordinate in the range -1 to 1
+     */
+    function normalizeAxes(x = 0, y = 0) {
+      let xAxis = x;
+      let yAxis = y;
+
+      // Determine if the point is outside the bounds of the circle
+      // and, if so, place it on the edge of the circle
+      const hypotenuse = Math.sqrt((x * x) + (y * y));
+      if (hypotenuse > 1) {
+        const theta = Math.atan2(y, x);
+        xAxis = Math.cos(theta);
+        yAxis = Math.sin(theta);
+      }
+
+      // Scale and move the circle so values are in the interpolation range.  The circle's origin moves
+      // from (0, 0) to (0.5, 0.5). The circle's radius scales from 1 to be 0.5.
+      const result = {
+        normalizedXAxis: (xAxis * 0.5) + 0.5,
+        normalizedYAxis: (yAxis * 0.5) + 0.5
+      };
+      return result;
+    }
+
+    /**
+     * Contains the description of how the 3D model should visually respond to a specific user input.
+     * This is accomplished by initializing the object with the name of a node in the 3D model and
+     * property that need to be modified in response to user input, the name of the nodes representing
+     * the allowable range of motion, and the name of the input which triggers the change. In response
+     * to the named input changing, this object computes the appropriate weighting to use for
+     * interpolating between the range of motion nodes.
+     */
+    class VisualResponse {
+      constructor(visualResponseDescription) {
+        this.componentProperty = visualResponseDescription.componentProperty;
+        this.states = visualResponseDescription.states;
+        this.valueNodeName = visualResponseDescription.valueNodeName;
+        this.valueNodeProperty = visualResponseDescription.valueNodeProperty;
+
+        if (this.valueNodeProperty === Constants.VisualResponseProperty.TRANSFORM) {
+          this.minNodeName = visualResponseDescription.minNodeName;
+          this.maxNodeName = visualResponseDescription.maxNodeName;
+        }
+
+        // Initializes the response's current value based on default data
+        this.value = 0;
+        this.updateFromComponent(defaultComponentValues);
+      }
+
+      /**
+       * Computes the visual response's interpolation weight based on component state
+       * @param {Object} componentValues - The component from which to update
+       * @param {number} xAxis - The reported X axis value of the component
+       * @param {number} yAxis - The reported Y axis value of the component
+       * @param {number} button - The reported value of the component's button
+       * @param {string} state - The component's active state
+       */
+      updateFromComponent({
+        xAxis, yAxis, button, state
+      }) {
+        const { normalizedXAxis, normalizedYAxis } = normalizeAxes(xAxis, yAxis);
+        switch (this.componentProperty) {
+          case Constants.ComponentProperty.X_AXIS:
+            this.value = (this.states.includes(state)) ? normalizedXAxis : 0.5;
+            break;
+          case Constants.ComponentProperty.Y_AXIS:
+            this.value = (this.states.includes(state)) ? normalizedYAxis : 0.5;
+            break;
+          case Constants.ComponentProperty.BUTTON:
+            this.value = (this.states.includes(state)) ? button : 0;
+            break;
+          case Constants.ComponentProperty.STATE:
+            if (this.valueNodeProperty === Constants.VisualResponseProperty.VISIBILITY) {
+              this.value = (this.states.includes(state));
+            } else {
+              this.value = this.states.includes(state) ? 1.0 : 0.0;
+            }
+            break;
+          default:
+            throw new Error(`Unexpected visualResponse componentProperty ${this.componentProperty}`);
+        }
+      }
+    }
+
+    class Component {
+      /**
+       * @param {Object} componentId - Id of the component
+       * @param {Object} componentDescription - Description of the component to be created
+       */
+      constructor(componentId, componentDescription) {
+        if (!componentId
+         || !componentDescription
+         || !componentDescription.visualResponses
+         || !componentDescription.gamepadIndices
+         || Object.keys(componentDescription.gamepadIndices).length === 0) {
+          throw new Error('Invalid arguments supplied');
+        }
+
+        this.id = componentId;
+        this.type = componentDescription.type;
+        this.rootNodeName = componentDescription.rootNodeName;
+        this.touchPointNodeName = componentDescription.touchPointNodeName;
+
+        // Build all the visual responses for this component
+        this.visualResponses = {};
+        Object.keys(componentDescription.visualResponses).forEach((responseName) => {
+          const visualResponse = new VisualResponse(componentDescription.visualResponses[responseName]);
+          this.visualResponses[responseName] = visualResponse;
+        });
+
+        // Set default values
+        this.gamepadIndices = Object.assign({}, componentDescription.gamepadIndices);
+
+        this.values = {
+          state: Constants.ComponentState.DEFAULT,
+          button: (this.gamepadIndices.button !== undefined) ? 0 : undefined,
+          xAxis: (this.gamepadIndices.xAxis !== undefined) ? 0 : undefined,
+          yAxis: (this.gamepadIndices.yAxis !== undefined) ? 0 : undefined
+        };
+      }
+
+      get data() {
+        const data = { id: this.id, ...this.values };
+        return data;
+      }
+
+      /**
+       * @description Poll for updated data based on current gamepad state
+       * @param {Object} gamepad - The gamepad object from which the component data should be polled
+       */
+      updateFromGamepad(gamepad) {
+        // Set the state to default before processing other data sources
+        this.values.state = Constants.ComponentState.DEFAULT;
+
+        // Get and normalize button
+        if (this.gamepadIndices.button !== undefined
+            && gamepad.buttons.length > this.gamepadIndices.button) {
+          const gamepadButton = gamepad.buttons[this.gamepadIndices.button];
+          this.values.button = gamepadButton.value;
+          this.values.button = (this.values.button < 0) ? 0 : this.values.button;
+          this.values.button = (this.values.button > 1) ? 1 : this.values.button;
+
+          // Set the state based on the button
+          if (gamepadButton.pressed || this.values.button === 1) {
+            this.values.state = Constants.ComponentState.PRESSED;
+          } else if (gamepadButton.touched || this.values.button > Constants.ButtonTouchThreshold) {
+            this.values.state = Constants.ComponentState.TOUCHED;
+          }
+        }
+
+        // Get and normalize x axis value
+        if (this.gamepadIndices.xAxis !== undefined
+            && gamepad.axes.length > this.gamepadIndices.xAxis) {
+          this.values.xAxis = gamepad.axes[this.gamepadIndices.xAxis];
+          this.values.xAxis = (this.values.xAxis < -1) ? -1 : this.values.xAxis;
+          this.values.xAxis = (this.values.xAxis > 1) ? 1 : this.values.xAxis;
+
+          // If the state is still default, check if the xAxis makes it touched
+          if (this.values.state === Constants.ComponentState.DEFAULT
+            && Math.abs(this.values.xAxis) > Constants.AxisTouchThreshold) {
+            this.values.state = Constants.ComponentState.TOUCHED;
+          }
+        }
+
+        // Get and normalize Y axis value
+        if (this.gamepadIndices.yAxis !== undefined
+            && gamepad.axes.length > this.gamepadIndices.yAxis) {
+          this.values.yAxis = gamepad.axes[this.gamepadIndices.yAxis];
+          this.values.yAxis = (this.values.yAxis < -1) ? -1 : this.values.yAxis;
+          this.values.yAxis = (this.values.yAxis > 1) ? 1 : this.values.yAxis;
+
+          // If the state is still default, check if the yAxis makes it touched
+          if (this.values.state === Constants.ComponentState.DEFAULT
+            && Math.abs(this.values.yAxis) > Constants.AxisTouchThreshold) {
+            this.values.state = Constants.ComponentState.TOUCHED;
+          }
+        }
+
+        // Update the visual response weights based on the current component data
+        Object.values(this.visualResponses).forEach((visualResponse) => {
+          visualResponse.updateFromComponent(this.values);
+        });
+      }
+    }
+
+    /**
+      * @description Builds a motion controller with components and visual responses based on the
+      * supplied profile description. Data is polled from the xrInputSource's gamepad.
+      * @author Nell Waliczek / https://github.com/NellWaliczek
+    */
+    class MotionController {
+      /**
+       * @param {Object} xrInputSource - The XRInputSource to build the MotionController around
+       * @param {Object} profile - The best matched profile description for the supplied xrInputSource
+       * @param {Object} assetUrl
+       */
+      constructor(xrInputSource, profile, assetUrl) {
+        if (!xrInputSource) {
+          throw new Error('No xrInputSource supplied');
+        }
+
+        if (!profile) {
+          throw new Error('No profile supplied');
+        }
+
+        this.xrInputSource = xrInputSource;
+        this.assetUrl = assetUrl;
+        this.id = profile.profileId;
+
+        // Build child components as described in the profile description
+        this.layoutDescription = profile.layouts[xrInputSource.handedness];
+        this.components = {};
+        Object.keys(this.layoutDescription.components).forEach((componentId) => {
+          const componentDescription = this.layoutDescription.components[componentId];
+          this.components[componentId] = new Component(componentId, componentDescription);
+        });
+
+        // Initialize components based on current gamepad state
+        this.updateFromGamepad();
+      }
+
+      get gripSpace() {
+        return this.xrInputSource.gripSpace;
+      }
+
+      get targetRaySpace() {
+        return this.xrInputSource.targetRaySpace;
+      }
+
+      /**
+       * @description Returns a subset of component data for simplified debugging
+       */
+      get data() {
+        const data = [];
+        Object.values(this.components).forEach((component) => {
+          data.push(component.data);
+        });
+        return data;
+      }
+
+      /**
+       * @description Poll for updated data based on current gamepad state
+       */
+      updateFromGamepad() {
+        Object.values(this.components).forEach((component) => {
+          component.updateFromGamepad(this.xrInputSource.gamepad);
+        });
+      }
+    }
+
+    /*
+    import {
+        Mesh,
+        MeshBasicMaterial,
+        Object3D,
+        SphereGeometry,
+    } from 'three';
+    */
+
+    const DEFAULT_PROFILES_PATH = 'https://cdn.jsdelivr.net/npm/@webxr-input-profiles/assets@1.0/dist/profiles';
+    const DEFAULT_PROFILE = 'generic-trigger';
+
+    class XRControllerModel extends THREE.Object3D {
+
+        constructor() {
+
+            super();
+
+            this.motionController = null;
+            this.envMap = null;
+
+        }
+
+        setEnvironmentMap( envMap ) {
+
+            if ( this.envMap == envMap ) {
+
+                return this;
+
+            }
+
+            this.envMap = envMap;
+            this.traverse( ( child ) => {
+
+                if ( child.isMesh ) {
+
+                    child.material.envMap = this.envMap;
+                    child.material.needsUpdate = true;
+
+                }
+
+            } );
+
+            return this;
+
+        }
+
+        /**
+         * Polls data from the XRInputSource and updates the model's components to match
+         * the real world data
+         */
+        updateMatrixWorld( force ) {
+
+            super.updateMatrixWorld( force );
+
+            if ( ! this.motionController ) return;
+
+            // Cause the MotionController to poll the Gamepad for data
+            this.motionController.updateFromGamepad();
+
+            // Update the 3D model to reflect the button, thumbstick, and touchpad state
+            Object.values( this.motionController.components ).forEach( ( component ) => {
+
+                // Update node data based on the visual responses' current states
+                Object.values( component.visualResponses ).forEach( ( visualResponse ) => {
+
+                    const { valueNode, minNode, maxNode, value, valueNodeProperty } = visualResponse;
+
+                    // Skip if the visual response node is not found. No error is needed,
+                    // because it will have been reported at load time.
+                    if ( ! valueNode ) return;
+
+                    // Calculate the new properties based on the weight supplied
+                    if ( valueNodeProperty === Constants.VisualResponseProperty.VISIBILITY ) {
+
+                        valueNode.visible = value;
+
+                    } else if ( valueNodeProperty === Constants.VisualResponseProperty.TRANSFORM ) {
+
+                        valueNode.quaternion.slerpQuaternions(
+                            minNode.quaternion,
+                            maxNode.quaternion,
+                            value
+                        );
+
+                        valueNode.position.lerpVectors(
+                            minNode.position,
+                            maxNode.position,
+                            value
+                        );
+
+                    }
+
+                } );
+
+            } );
+
+        }
+
+    }
+
+    /**
+     * Walks the model's tree to find the nodes needed to animate the components and
+     * saves them to the motionContoller components for use in the frame loop. When
+     * touchpads are found, attaches a touch dot to them.
+     */
+    function findNodes( motionController, scene ) {
+
+        // Loop through the components and find the nodes needed for each components' visual responses
+        Object.values( motionController.components ).forEach( ( component ) => {
+
+            const { type, touchPointNodeName, visualResponses } = component;
+
+            if ( type === Constants.ComponentType.TOUCHPAD ) {
+
+                component.touchPointNode = scene.getObjectByName( touchPointNodeName );
+                if ( component.touchPointNode ) {
+
+                    // Attach a touch dot to the touchpad.
+                    const sphereGeometry = new SphereGeometry( 0.001 );
+                    const material = new MeshBasicMaterial( { color: 0x0000FF } );
+                    const sphere = new Mesh( sphereGeometry, material );
+                    component.touchPointNode.add( sphere );
+
+                } else {
+
+                    console.warn( `Could not find touch dot, ${component.touchPointNodeName}, in touchpad component ${component.id}` );
+
+                }
+
+            }
+
+            // Loop through all the visual responses to be applied to this component
+            Object.values( visualResponses ).forEach( ( visualResponse ) => {
+
+                const { valueNodeName, minNodeName, maxNodeName, valueNodeProperty } = visualResponse;
+
+                // If animating a transform, find the two nodes to be interpolated between.
+                if ( valueNodeProperty === Constants.VisualResponseProperty.TRANSFORM ) {
+
+                    visualResponse.minNode = scene.getObjectByName( minNodeName );
+                    visualResponse.maxNode = scene.getObjectByName( maxNodeName );
+
+                    // If the extents cannot be found, skip this animation
+                    if ( ! visualResponse.minNode ) {
+
+                        console.warn( `Could not find ${minNodeName} in the model` );
+                        return;
+
+                    }
+
+                    if ( ! visualResponse.maxNode ) {
+
+                        console.warn( `Could not find ${maxNodeName} in the model` );
+                        return;
+
+                    }
+
+                }
+
+                // If the target node cannot be found, skip this animation
+                visualResponse.valueNode = scene.getObjectByName( valueNodeName );
+                if ( ! visualResponse.valueNode ) {
+
+                    console.warn( `Could not find ${valueNodeName} in the model` );
+
+                }
+
+            } );
+
+        } );
+
+    }
+
+    function addAssetSceneToControllerModel( controllerModel, scene ) {
+
+        // Find the nodes needed for animation and cache them on the motionController.
+        findNodes( controllerModel.motionController, scene );
+
+        // Apply any environment map that the mesh already has set.
+        if ( controllerModel.envMap ) {
+
+            scene.traverse( ( child ) => {
+
+                if ( child.isMesh ) {
+
+                    child.material.envMap = controllerModel.envMap;
+                    child.material.needsUpdate = true;
+
+                }
+
+            } );
+
+        }
+
+        // Add the glTF scene to the controllerModel.
+        controllerModel.add( scene );
+
+    }
+
+    class XRControllerModelFactory {
+
+        constructor( gltfLoader = null ) {
+
+            this.gltfLoader = gltfLoader;
+            this.path = DEFAULT_PROFILES_PATH;
+            this._assetCache = {};
+
+            // If a GLTFLoader wasn't supplied to the constructor create a new one.
+            if ( ! this.gltfLoader ) {
+
+                this.gltfLoader = new GLTFLoader();
+
+            }
+
+        }
+
+        createControllerModel( controller ) {
+
+            const controllerModel = new XRControllerModel();
+            let scene = null;
+
+            controller.addEventListener( 'connected', ( event ) => {
+
+                const xrInputSource = event.data;
+
+                if ( xrInputSource.targetRayMode !== 'tracked-pointer' || ! xrInputSource.gamepad ) return;
+
+                fetchProfile( xrInputSource, this.path, DEFAULT_PROFILE ).then( ( { profile, assetPath } ) => {
+
+                    controllerModel.motionController = new MotionController(
+                        xrInputSource,
+                        profile,
+                        assetPath
+                    );
+
+                    const cachedAsset = this._assetCache[ controllerModel.motionController.assetUrl ];
+                    if ( cachedAsset ) {
+
+                        scene = cachedAsset.scene.clone();
+
+                        addAssetSceneToControllerModel( controllerModel, scene );
+
+                    } else {
+
+                        if ( ! this.gltfLoader ) {
+
+                            throw new Error( 'GLTFLoader not set.' );
+
+                        }
+
+                        this.gltfLoader.setPath( '' );
+                        this.gltfLoader.load( controllerModel.motionController.assetUrl, ( asset ) => {
+
+                            this._assetCache[ controllerModel.motionController.assetUrl ] = asset;
+
+                            scene = asset.scene.clone();
+
+                            addAssetSceneToControllerModel( controllerModel, scene );
+
+                        },
+                        null,
+                        () => {
+
+                            throw new Error( `Asset ${controllerModel.motionController.assetUrl} missing or malformed.` );
+
+                        } );
+
+                    }
+
+                } ).catch( ( err ) => {
+
+                    console.warn( err );
+
+                } );
+
+            } );
+
+            controller.addEventListener( 'disconnected', () => {
+
+                controllerModel.motionController = null;
+                controllerModel.remove( scene );
+                scene = null;
+
+            } );
+
+            return controllerModel;
+
+        }
+
     }
 
     /**
@@ -42208,7 +55520,20 @@ var icn3d = (function (exports) {
             // highlight on impostors
             ic.mdl_ghost = new THREE.Object3D();  // Impostor display
             ic.scene_ghost.add(ic.mdl_ghost);
+            
+            // for VR view
+            let controller = ic.renderer.xr.getController( 0 ); 
+            ic.scene.add( controller );
 
+            let controllerModelFactory = new XRControllerModelFactory();
+            let controllerGrip = ic.renderer.xr.getControllerGrip( 0 );
+            controllerGrip.add( controllerModelFactory.createControllerModel( controllerGrip ) );
+            ic.scene.add( controllerGrip );
+
+            $("#" + me.pre + "VRButton").remove();
+            //document.body.appendChild( ic.VRButtonCls.createButton( ic.renderer ) );
+            $("#" + me.pre + "viewer").get(0).appendChild( ic.VRButtonCls.createButton( ic.renderer ) );
+            
             // related to pk
             ic.objects = []; // define objects for pk, not all elements are used for pk
             ic.objects_ghost = []; // define objects for pk, not all elements are used for pk
@@ -43466,13 +56791,9 @@ var icn3d = (function (exports) {
 
             ic.setColorCls.applyPrevColor();
 
-            if(ic.biomtMatrices !== undefined && ic.biomtMatrices.length > 1) {
-                // show bioassembly in two cases
-                // 1. asymmetric unit: me.cfg.bu == 0
-                // 2. biological unit with less than ic.maxatomcnt atom: 
-                // me.cfg.bu == 1 && Object.keys(ic.atoms).length * ic.biomtMatrices.length < ic.maxatomcnt
-                if(ic.bAssembly && Object.keys(ic.structures).length == 1 && (me.cfg.bu == 0 
-                  || (me.cfg.bu == 1 && Object.keys(ic.atoms).length * ic.biomtMatrices.length > ic.maxatomcnt)) ) {
+            if(ic.biomtMatrices !== undefined && ic.biomtMatrices.length > 1) {        
+                if(ic.bAssembly && Object.keys(ic.structures).length == 1 && ((me.cfg.mmdbid === undefined && me.cfg.bu == 1)
+                  || (me.cfg.mmdbid !== undefined && me.cfg.bu == 1 && Object.keys(ic.atoms).length * ic.biomtMatrices.length > ic.maxatomcnt)) ) {
                     ic.instancingCls.drawSymmetryMates();
                 }
                 else {
@@ -43525,16 +56846,24 @@ var icn3d = (function (exports) {
             }
             else {
                 ic.controls.update(para);
-            }
+            }      
         }
 
         //Render the scene and objects into pixels.
-        render() { let ic = this.icn3d, me = ic.icn3dui;
+        render() { let ic = this.icn3d; ic.icn3dui;
+            let thisClass = this;
+            // setAnimationLoop is required for VR
+            ic.renderer.setAnimationLoop( function() {
+                thisClass.render_base();
+            });
+        }
+
+        //Render the scene and objects into pixels.
+        render_base() { let ic = this.icn3d, me = ic.icn3dui;
             if(me.bNode) return;
 
             let cam = (ic.bControlGl && !me.bNode) ? window.cam : ic.cam;
 
-        //    if(ic.bShade) {
             if(ic.directionalLight) {
                 let quaternion = new THREE.Quaternion();
                 quaternion.setFromUnitVectors( new THREE.Vector3(0, 0, ic.cam_z).normalize(), cam.position.clone().normalize() );
@@ -43543,20 +56872,12 @@ var icn3d = (function (exports) {
                 ic.directionalLight2.position.copy(ic.lightPos2.clone().applyQuaternion( quaternion ).normalize());
                 ic.directionalLight3.position.copy(ic.lightPos3.clone().applyQuaternion( quaternion ).normalize());
             }
-        //    }
-        //    else {
-        //        ic.directionalLight.position.copy(cam.position);
-        //    }
-
-    //        ic.renderer.gammaInput = true
-    //        ic.renderer.gammaOutput = true
 
             ic.renderer.setPixelRatio( window.devicePixelRatio ); // r71
             if(ic.scene) {
                 ic.renderer.render(ic.scene, cam);
             }
         }
-
     }
 
     /**
@@ -43813,10 +57134,10 @@ var icn3d = (function (exports) {
            para.update = true;
 
            if(ic.bControlGl && !me.bNode) {
-              window.controls.update(para);
+              if(window.controls) window.controls.update(para);
            }
            else {
-              ic.controls.update(para);
+              if(ic.controls) ic.controls.update(para);
            }
 
            if(atoms === undefined) {
@@ -43907,7 +57228,7 @@ var icn3d = (function (exports) {
                 let height = $("#" + ic.pre + "canvas").height();
                 ic.applyCenterCls.setWidthHeight(width, height);
 
-                if(ic.bRender) ic.drawCls.render();
+                if(ic.bRender) ic.drawCls.render_base();
 
                 let bAddURL = true;
                 if(!window.File || !window.FileReader || !window.FileList || !window.Blob) {
@@ -43975,7 +57296,7 @@ var icn3d = (function (exports) {
                 ic.scaleFactor = 1.0;
                 ic.applyCenterCls.setWidthHeight(width, height);
 
-                if(ic.bRender) ic.drawCls.render();
+                if(ic.bRender) ic.drawCls.render_base();
             }
             else if(type === 'html') {
                 let dataStr = text;
@@ -44599,6 +57920,12 @@ var icn3d = (function (exports) {
 
                     $("#" + ic.pre + "title").html(title);
                 }
+                else if(me.cfg.mmdbafid !== undefined) {
+                    let structureArray = me.cfg.mmdbafid.split(',');
+                    title = 'Multiple structures: ' + structureArray;
+
+                    $("#" + ic.pre + "title").html(title);
+                }
                 else {
                     let url = this.getLinkToStructureSummary();
 
@@ -44691,9 +58018,9 @@ var icn3d = (function (exports) {
         }
 
         setLegendHtml(bAf) { let me = this.icn3dui, ic = me.icn3d;
-            let legendHtml;
+            let legendHtml = "<br>";
             if(bAf) {
-                legendHtml = this.setAlphaFoldLegend();
+                legendHtml += this.setAlphaFoldLegend();
             }
             else {
                 let startColorStr = (ic.startColor == 'red') ? '#F00' : (ic.startColor == 'green') ? '#0F0' : '#00F';
@@ -44701,11 +58028,39 @@ var icn3d = (function (exports) {
                 let endColorStr = (ic.endColor == 'red') ? '#F00' : (ic.endColor == 'green') ? '#0F0' : '#00F';
                 let rangeStr = startColorStr + ' 0%, ' + midColorStr + ' 50%, ' + endColorStr + ' 100%';
 
-                legendHtml = "<div style='height: 20px; background: linear-gradient(to right, " + rangeStr + ");'></div><table width='100%' border='0' cellspacing='0' cellpadding='0'><tr><td width='33%'>" + ic.startValue + "</td><td width='33%' align='center'>" + ic.midValue + "</td><td width='33%' align='right'>" + ic.endValue + "</td></tr></table>";
+                legendHtml += "<div style='height: 20px; background: linear-gradient(to right, " + rangeStr + ");'></div><table width='100%' border='0' cellspacing='0' cellpadding='0'><tr><td width='33%'>" + ic.startValue + "</td><td width='33%' align='center'>" + ic.midValue + "</td><td width='33%' align='right'>" + ic.endValue + "</td></tr></table>";
             }
 
             return legendHtml;
         }
+
+        SetChainsAdvancedMenu() { let me = this.icn3dui, ic = me.icn3d;
+            if(ic.bSetChainsAdvancedMenu === undefined || !ic.bSetChainsAdvancedMenu) {
+                let prevHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+                ic.definedSetsCls.setPredefinedInMenu();
+                ic.bSetChainsAdvancedMenu = true;
+                ic.hAtoms = me.hashUtilsCls.cloneHash(prevHAtoms);
+            }
+        }
+
+        setSetsMenus(bTable) { let me = this.icn3dui, ic = me.icn3d;
+            this.SetChainsAdvancedMenu();
+
+            let id1 = (bTable) ? 'atomsCustomDistTable' : 'atomsCustomDist';
+            let id2 = (bTable) ? 'atomsCustomDistTable2' : 'atomsCustomDist2';
+
+            let definedAtomsHtml = ic.definedSetsCls.setAtomMenu(['protein']);
+            if($("#" + me.pre + id1).length) {
+                $("#" + me.pre + id1).html("  <option value='selected'>selected</option>" + definedAtomsHtml);
+            }
+            if($("#" + me.pre + id2).length) {
+                $("#" + me.pre + id2).html("  <option value='selected' selected>selected</option>" + definedAtomsHtml);
+            }
+
+            $("#" + me.pre + id1).resizable();
+            $("#" + me.pre + id2).resizable();
+        }
+
 
         clickMenu1() { let me = this.icn3dui; me.icn3d;
             if(me.bNode) return;
@@ -44713,6 +58068,18 @@ var icn3d = (function (exports) {
             let thisClass = this;
         //mn 1
         //    clkMn1_mmtfid: function() {
+            me.myEventCls.onIds("#" + me.pre + "mn1_vastplus", "click", function(e) { me.icn3d;
+                me.htmlCls.dialogCls.openDlg('dl_vastplus', 'Please input PDB ID for VAST+');
+             });
+
+            me.myEventCls.onIds("#" + me.pre + "mn1_vast", "click", function(e) { me.icn3d;
+                me.htmlCls.dialogCls.openDlg('dl_vast', 'Please input chain or PDB file for VAST');
+             });
+
+            me.myEventCls.onIds("#" + me.pre + "mn1_foldseek", "click", function(e) { me.icn3d;
+                me.htmlCls.dialogCls.openDlg('dl_foldseek', 'Please input AlphaFold Uniprot ID or PDB ID');
+             });
+
             me.myEventCls.onIds("#" + me.pre + "mn1_mmtfid", "click", function(e) { me.icn3d;
                me.htmlCls.dialogCls.openDlg('dl_mmtfid', 'Please input MMTF ID');
             });
@@ -44734,8 +58101,12 @@ var icn3d = (function (exports) {
         //    },
         //    clkMn1_align: function() {
             me.myEventCls.onIds("#" + me.pre + "mn1_align", "click", function(e) { me.icn3d;
-               me.htmlCls.dialogCls.openDlg('dl_align', 'Align two 3D structures');
+               me.htmlCls.dialogCls.openDlg('dl_align', 'Align two PDB structures');
             });
+
+            me.myEventCls.onIds("#" + me.pre + "mn1_alignaf", "click", function(e) { me.icn3d;
+                me.htmlCls.dialogCls.openDlg('dl_alignaf', 'Align two AlphaFold structures');
+             });
         //    },
         //    clkMn1_chainalign: function() {
             me.myEventCls.onIds("#" + me.pre + "mn1_chainalign", "click", function(e) { me.icn3d;
@@ -44752,9 +58123,9 @@ var icn3d = (function (exports) {
                //me = me.setIcn3dui($(this).attr('id'));
                me.htmlCls.dialogCls.openDlg('dl_pdbfile', 'Please input PDB File');
             });
-            me.myEventCls.onIds("#" + me.pre + "mn1_pdbfile_app", "click", function(e) { me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn1_pdbfile_app", "#" + me.pre + "tool_pdbfile"], "click", function(e) { me.icn3d;
                //me = me.setIcn3dui($(this).attr('id'));
-               me.htmlCls.dialogCls.openDlg('dl_pdbfile_app', 'Please append PDB File');
+               me.htmlCls.dialogCls.openDlg('dl_pdbfile_app', 'Please append PDB Files');
             });
         //    },
         //    clkMn1_mol2file: function() {
@@ -44804,8 +58175,12 @@ var icn3d = (function (exports) {
             });
         //    },
         //    clkMn1_mmdbid: function() {
-            me.myEventCls.onIds("#" + me.pre + "mn1_mmdbid", "click", function(e) { me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn1_mmdbid", "#" + me.pre + "tool_mmdbid"], "click", function(e) { me.icn3d;
                me.htmlCls.dialogCls.openDlg('dl_mmdbid', 'Please input MMDB or PDB ID');
+            });
+
+            me.myEventCls.onIds("#" + me.pre + "mn1_mmdbafid", "click", function(e) { me.icn3d;
+                me.htmlCls.dialogCls.openDlg('dl_mmdbafid', 'Please input MMDB, PDB, or AlphaFold UniProt IDs');
             });
         //    },
         //    clkMn1_blast_rep_id: function() {
@@ -44848,7 +58223,7 @@ var icn3d = (function (exports) {
             });
         //    },
 
-            me.myEventCls.onIds(["#" + me.pre + "mn1_delphi", "#" + me.pre + "mn1_delphi2"], "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn1_delphi", "#" + me.pre + "mn1_delphi2", "#" + me.pre + "tool_delphi"], "click", function(e) { let ic = me.icn3d;
                ic.loadPhiFrom = 'delphi';
                $("#" + me.pre + "dl_delphi_tabs").tabs();
                me.htmlCls.dialogCls.openDlg('dl_delphi', 'Please set parameters to display DelPhi potential map');
@@ -45019,12 +58394,9 @@ var icn3d = (function (exports) {
         //    clkMn1_exportSelections: function() {
             me.myEventCls.onIds("#" + me.pre + "mn1_exportSelections", "click", function(e) { let ic = me.icn3d;
                thisClass.setLogCmd("export all selections", false);
-              if(ic.bSetChainsAdvancedMenu === undefined || !ic.bSetChainsAdvancedMenu) {
-                   let prevHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
-                   ic.definedSetsCls.setPredefinedInMenu();
-                   ic.bSetChainsAdvancedMenu = true;
-                   ic.hAtoms = me.hashUtilsCls.cloneHash(prevHAtoms);
-              }
+              
+               thisClass.SetChainsAdvancedMenu();
+
                let text = ic.saveFileCls.exportCustomAtoms();
                let file_pref =(ic.inputid) ? ic.inputid : "custom";
                ic.saveFileCls.saveFile(file_pref + '_selections.txt', 'text', [text]);
@@ -45032,12 +58404,9 @@ var icn3d = (function (exports) {
 
             me.myEventCls.onIds("#" + me.pre + "mn1_exportSelDetails", "click", function(e) { let ic = me.icn3d;
                thisClass.setLogCmd("export all selections with details", false);
-              if(ic.bSetChainsAdvancedMenu === undefined || !ic.bSetChainsAdvancedMenu) {
-                   let prevHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
-                   ic.definedSetsCls.setPredefinedInMenu();
-                   ic.bSetChainsAdvancedMenu = true;
-                   ic.hAtoms = me.hashUtilsCls.cloneHash(prevHAtoms);
-              }
+              
+               thisClass.SetChainsAdvancedMenu();
+
                let bDetails = true;
                let text = ic.saveFileCls.exportCustomAtoms(bDetails);
                let file_pref =(ic.inputid) ? ic.inputid : "custom";
@@ -45046,7 +58415,7 @@ var icn3d = (function (exports) {
 
         //    },
         //    clkMn1_sharelink: function() {
-            me.myEventCls.onIds("#" + me.pre + "mn1_sharelink", "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn1_sharelink", "#" + me.pre + "tool_sharelink"], "click", function(e) { let ic = me.icn3d;
                 ic.shareLinkCls.shareLink();
             });
         //    },
@@ -45080,13 +58449,14 @@ var icn3d = (function (exports) {
                        thisClass.setLogCmd("link to compounds " + ic.molTitle + ": " + url, false);
                }
                else {
+                   let url;
                    if(me.cfg.cid !== undefined) {
                            url = "https://www.ncbi.nlm.nih.gov/pccompound?LinkName=pccompound_pccompound_3d&from_uid=" + ic.inputid;
                            thisClass.setLogCmd("link to compounds with structure similar to CID " + ic.inputid + ": " + url, false);
                    }
                    else {
                        let idArray = ic.inputid.split('_');
-                       let url;
+                       
                        if(idArray.length === 1) {
                            url = me.htmlCls.baseUrl + "vastplus/vastplus.cgi?uid=" + ic.inputid;
                            thisClass.setLogCmd("link to structures similar to " + ic.inputid + ": " + url, false);
@@ -45170,7 +58540,7 @@ var icn3d = (function (exports) {
             let thisClass = this;
         // mn 2
         //    clkMn2_selectannotations: function() {
-            me.myEventCls.onIds("#" + me.pre + "mn6_selectannotations", "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn6_selectannotations", "#" + me.pre + "tool_selectannotations"], "click", function(e) { let ic = me.icn3d;
                ic.showAnnoCls.showAnnotations();
                thisClass.setLogCmd("view annotations", true);
                //thisClass.setLogCmd("window annotations", true);
@@ -45194,7 +58564,8 @@ var icn3d = (function (exports) {
         //    clkMn2_selectdisplayed: function() {
             me.myEventCls.onIds("#" + me.pre + "mn2_selectdisplayed", "click", function(e) { let ic = me.icn3d;
                thisClass.setLogCmd("select displayed set", true);
-               ic.hAtoms = me.hashUtilsCls.cloneHash(ic.dAtoms);
+               //ic.hAtoms = me.hashUtilsCls.cloneHash(ic.dAtoms);
+               ic.hAtoms = me.hashUtilsCls.cloneHash(ic.viewSelectionAtoms);
                ic.hlUpdateCls.updateHlAll();
                //ic.drawCls.draw();
             });
@@ -45310,7 +58681,7 @@ var icn3d = (function (exports) {
             });
         //    },
         //    clkMn2_definedsets: function() {
-            me.myEventCls.onIds(["#" + me.pre + "mn2_definedsets", "#" + me.pre + "definedsets", "#" + me.pre + "definedsets2"], "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn2_definedsets", "#" + me.pre + "definedsets", "#" + me.pre + "definedsets2", "#" + me.pre + "tool_definedsets"], "click", function(e) { let ic = me.icn3d;
                ic.definedSetsCls.showSets();
                thisClass.setLogCmd('defined sets', true);
                //thisClass.setLogCmd('window defined sets', true);
@@ -45386,13 +58757,9 @@ var icn3d = (function (exports) {
             });
         //    },
         //    clkMn2_aroundsphere: function() {
-            me.myEventCls.onIds("#" + me.pre + "mn2_aroundsphere", "click", function(e) { let ic = me.icn3d;
-                if(ic.bSetChainsAdvancedMenu === undefined || !ic.bSetChainsAdvancedMenu) {
-                   let prevHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
-                   ic.definedSetsCls.setPredefinedInMenu();
-                   ic.bSetChainsAdvancedMenu = true;
-                   ic.hAtoms = me.hashUtilsCls.cloneHash(prevHAtoms);
-                }
+            me.myEventCls.onIds(["#" + me.pre + "mn2_aroundsphere", "#" + me.pre + "tool_aroundsphere"], "click", function(e) { let ic = me.icn3d;
+                thisClass.SetChainsAdvancedMenu();
+
                 let definedAtomsHtml = ic.definedSetsCls.setAtomMenu(['protein']);
                 if($("#" + me.pre + "atomsCustomSphere").length) {
                     $("#" + me.pre + "atomsCustomSphere").html("  <option value='non-selected' selected>non-selected</option><option value='selected'>selected</option>" + definedAtomsHtml);
@@ -45420,7 +58787,7 @@ var icn3d = (function (exports) {
             let thisClass = this;
         // mn 3
         //    clkMn3_proteinsRibbon: function() {
-            me.myEventCls.onIds("#" + me.pre + "mn3_proteinsRibbon", "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn3_proteinsRibbon","#" + me.pre + "tool_proteinsRibbon"], "click", function(e) { let ic = me.icn3d;
                ic.setOptionCls.setStyle('proteins', 'ribbon');
                thisClass.setLogCmd('style proteins ribbon', true);
             });
@@ -45474,13 +58841,13 @@ var icn3d = (function (exports) {
             });
         //    },
         //    clkMn3_proteinsBallstick: function() {
-            me.myEventCls.onIds("#" + me.pre + "mn3_proteinsBallstick", "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn3_proteinsBallstick", "#" + me.pre + "tool_proteinsBallstick"], "click", function(e) { let ic = me.icn3d;
                ic.setOptionCls.setStyle('proteins', 'ball and stick');
                thisClass.setLogCmd('style proteins ball and stick', true);
             });
         //    },
         //    clkMn3_proteinsSphere: function() {
-            me.myEventCls.onIds("#" + me.pre + "mn3_proteinsSphere", "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn3_proteinsSphere", "#" + me.pre + "tool_proteinsSphere"], "click", function(e) { let ic = me.icn3d;
                ic.setOptionCls.setStyle('proteins', 'sphere');
                thisClass.setLogCmd('style proteins sphere', true);
             });
@@ -45493,26 +58860,26 @@ var icn3d = (function (exports) {
         //    },
         //    clkMn3_sidecLines: function() {
             me.myEventCls.onIds("#" + me.pre + "mn3_sidecLines", "click", function(e) { let ic = me.icn3d;
-               ic.setOptionCls.setStyle('sidec', 'lines');
-               thisClass.setLogCmd('style sidec lines', true);
+               ic.setOptionCls.setStyle('sidec', 'lines2');
+               thisClass.setLogCmd('style sidec lines2', true);
             });
         //    },
         //    clkMn3_sidecStick: function() {
             me.myEventCls.onIds("#" + me.pre + "mn3_sidecStick", "click", function(e) { let ic = me.icn3d;
-               ic.setOptionCls.setStyle('sidec', 'stick');
-               thisClass.setLogCmd('style sidec stick', true);
+               ic.setOptionCls.setStyle('sidec', 'stick2');
+               thisClass.setLogCmd('style sidec stick2', true);
             });
         //    },
         //    clkMn3_sidecBallstick: function() {
             me.myEventCls.onIds("#" + me.pre + "mn3_sidecBallstick", "click", function(e) { let ic = me.icn3d;
-               ic.setOptionCls.setStyle('sidec', 'ball and stick');
-               thisClass.setLogCmd('style sidec ball and stick', true);
+               ic.setOptionCls.setStyle('sidec', 'ball and stick2');
+               thisClass.setLogCmd('style sidec ball and stick2', true);
             });
         //    },
         //    clkMn3_sidecSphere: function() {
             me.myEventCls.onIds("#" + me.pre + "mn3_sidecSphere", "click", function(e) { let ic = me.icn3d;
-               ic.setOptionCls.setStyle('sidec', 'sphere');
-               thisClass.setLogCmd('style sidec sphere', true);
+               ic.setOptionCls.setStyle('sidec', 'sphere2');
+               thisClass.setLogCmd('style sidec sphere2', true);
             });
         //    },
         //    clkMn3_sidecNo: function() {
@@ -45520,6 +58887,31 @@ var icn3d = (function (exports) {
                ic.setOptionCls.setStyle('sidec', 'nothing');
                thisClass.setLogCmd('style sidec nothing', true);
             });
+
+            me.myEventCls.onIds("#" + me.pre + "mn3_ntbaseLines", "click", function(e) { let ic = me.icn3d;
+                ic.setOptionCls.setStyle('ntbase', 'lines2');
+                thisClass.setLogCmd('style ntbase lines2', true);
+             });
+     
+             me.myEventCls.onIds("#" + me.pre + "mn3_ntbaseStick", "click", function(e) { let ic = me.icn3d;
+                ic.setOptionCls.setStyle('ntbase', 'stick2');
+                thisClass.setLogCmd('style ntbase stick2', true);
+             });
+     
+             me.myEventCls.onIds("#" + me.pre + "mn3_ntbaseBallstick", "click", function(e) { let ic = me.icn3d;
+                ic.setOptionCls.setStyle('ntbase', 'ball and stick2');
+                thisClass.setLogCmd('style ntbase ball and stick2', true);
+             });
+     
+             me.myEventCls.onIds("#" + me.pre + "mn3_ntbaseSphere", "click", function(e) { let ic = me.icn3d;
+                ic.setOptionCls.setStyle('ntbase', 'sphere2');
+                thisClass.setLogCmd('style ntbase sphere2', true);
+             });
+     
+             me.myEventCls.onIds("#" + me.pre + "mn3_ntbaseNo", "click", function(e) { let ic = me.icn3d;
+                ic.setOptionCls.setStyle('ntbase', 'nothing');
+                thisClass.setLogCmd('style ntbase nothing', true);
+             });
         //    },
         //    clkMn3_nuclCartoon: function() {
             me.myEventCls.onIds("#" + me.pre + "mn3_nuclCartoon", "click", function(e) { let ic = me.icn3d;
@@ -45690,20 +59082,57 @@ var icn3d = (function (exports) {
                ic.setOptionCls.setOption('color', 'spectrum for chains');
                thisClass.setLogCmd('color spectrum for chains', true);
             });
+
+            me.myEventCls.onIds("#" + me.pre + "mn4_clrSpectrumSets", "click", function(e) { let ic = me.icn3d;
+                if(ic.bSetChainsAdvancedMenu === undefined || !ic.bSetChainsAdvancedMenu) {
+                    let prevHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+                    ic.definedSetsCls.setPredefinedInMenu();
+                    ic.bSetChainsAdvancedMenu = true;
+                    ic.hAtoms = me.hashUtilsCls.cloneHash(prevHAtoms);
+                 }
+                 let definedAtomsHtml = ic.definedSetsCls.setAtomMenu(['protein']);
+                 if($("#" + me.pre + "atomsCustomColorSpectrum").length) {
+                     $("#" + me.pre + "atomsCustomColorSpectrum").html(definedAtomsHtml);
+                 }
+
+                 if(ic.bRender) me.htmlCls.dialogCls.openDlg('dl_colorspectrumbysets', 'Please select sets to apply spectrum color');
+                 $("#" + me.pre + "atomsCustomColorSpectrum").resizable();
+             });
+
+             me.myEventCls.onIds("#" + me.pre + "mn4_clrRainbowSets", "click", function(e) { let ic = me.icn3d;
+                if(ic.bSetChainsAdvancedMenu === undefined || !ic.bSetChainsAdvancedMenu) {
+                    let prevHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+                    ic.definedSetsCls.setPredefinedInMenu();
+                    ic.bSetChainsAdvancedMenu = true;
+                    ic.hAtoms = me.hashUtilsCls.cloneHash(prevHAtoms);
+                 }
+                 let definedAtomsHtml = ic.definedSetsCls.setAtomMenu(['protein']);
+                 if($("#" + me.pre + "atomsCustomColorRainbow").length) {
+                     $("#" + me.pre + "atomsCustomColorRainbow").html(definedAtomsHtml);
+                 }
+
+                 if(ic.bRender) me.htmlCls.dialogCls.openDlg('dl_colorrainbowbysets', 'Please select sets to apply rainbow color');
+                 $("#" + me.pre + "atomsCustomColorRainbow").resizable();
+             });
+
             me.myEventCls.onIds("#" + me.pre + "mn4_clrRainbow", "click", function(e) { let ic = me.icn3d;
                ic.setOptionCls.setOption('color', 'rainbow');
                thisClass.setLogCmd('color rainbow', true);
             });
-            me.myEventCls.onIds("#" + me.pre + "mn4_clrRainbowChain", "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn4_clrRainbowChain", "#" + me.pre + "tool_clrRainbowChain"], "click", function(e) { let ic = me.icn3d;
                ic.setOptionCls.setOption('color', 'rainbow for chains');
                thisClass.setLogCmd('color rainbow for chains', true);
             });
         //    },
         //    clkMn4_clrChain: function() {
-            me.myEventCls.onIds("#" + me.pre + "mn4_clrChain", "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn4_clrChain", "#" + me.pre + "tool_clrChain"], "click", function(e) { let ic = me.icn3d;
                ic.setOptionCls.setOption('color', 'chain');
                thisClass.setLogCmd('color chain', true);
             });
+            me.myEventCls.onIds("#" + me.pre + "mn4_clrStructure", "click", function(e) { let ic = me.icn3d;
+                ic.setOptionCls.setOption('color', 'structure');
+                thisClass.setLogCmd('color structure', true);
+             });
         //    },
         //    clkMn4_clrDomain: function() {
             me.myEventCls.onIds("#" + me.pre + "mn4_clrdomain", "click", function(e) { let ic = me.icn3d;
@@ -45718,7 +59147,7 @@ var icn3d = (function (exports) {
 
         //    },
         //    clkMn4_clrSSGreen: function() {
-            me.myEventCls.onIds("#" + me.pre + "mn4_clrSSGreen", "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn4_clrSSGreen", "#" + me.pre + "tool_clrSSGreen"], "click", function(e) { let ic = me.icn3d;
                ic.sheetcolor = 'green';
                ic.setOptionCls.setOption('color', 'secondary structure green');
                thisClass.setLogCmd('color secondary structure green', true);
@@ -45782,7 +59211,9 @@ var icn3d = (function (exports) {
                ic.endColor = $("#" + me.pre + "endColor").val();
 
                let legendHtml = thisClass.setLegendHtml();
-               $("#" + me.pre + "legend").html(legendHtml).show();
+               //$("#" + me.pre + "legend").html(legendHtml).show();
+               $("#" + me.pre + "dl_legend").html(legendHtml);
+               me.htmlCls.dialogCls.openDlg('dl_legend', 'Color range');
 
                ic.addTrackCls.setCustomFile('color', ic.startColor, ic.midColor, ic.endColor);
             });
@@ -45817,7 +59248,7 @@ var icn3d = (function (exports) {
 
         //    },
         //    clkMn4_clrAtom: function() {
-            me.myEventCls.onIds("#" + me.pre + "mn4_clrAtom", "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn4_clrAtom", "#" + me.pre + "tool_clrAtom"], "click", function(e) { let ic = me.icn3d;
                ic.setOptionCls.setOption('color', 'atom');
                thisClass.setLogCmd('color atom', true);
             });
@@ -45927,7 +59358,7 @@ var icn3d = (function (exports) {
             });
         //    },
         //    clkMn5_surfaceVDW: function() {
-            me.myEventCls.onIds("#" + me.pre + "mn5_surfaceVDW", "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn5_surfaceVDW", "#" + me.pre + "tool_surfaceVDW"], "click", function(e) { let ic = me.icn3d;
                ic.bConsiderNeighbors = false;
                ic.setOptionCls.setOption('surface', 'Van der Waals surface');
                thisClass.setLogCmd('set surface Van der Waals surface', true);
@@ -45987,10 +59418,20 @@ var icn3d = (function (exports) {
         */
 
             $(document).on("click", "." + me.pre + "mn5_opacity", function(e) { let ic = me.icn3d;
-               let value = $(this).attr('v');
+                ic.transparentRenderOrder = false;
+
+                let value = $(this).attr('v');
                ic.setOptionCls.setOption('opacity', value);
                thisClass.setLogCmd('set surface opacity ' + value, true);
             });
+
+            $(document).on("click", "." + me.pre + "mn5_opacityslow", function(e) { let ic = me.icn3d;
+                ic.transparentRenderOrder = true;
+
+                let value = $(this).attr('v');
+                ic.setOptionCls.setOption('opacity', value);
+                thisClass.setLogCmd('set surface2 opacity ' + value, true);
+             });
 
         //    clkMn5_wireframeYes: function() {
             me.myEventCls.onIds("#" + me.pre + "mn5_wireframeYes", "click", function(e) { let ic = me.icn3d;
@@ -46105,7 +59546,7 @@ var icn3d = (function (exports) {
         //    },
         }
 
-        clickMenu6() { let me = this.icn3dui; me.icn3d;
+        clickMenu6() { let me = this.icn3dui, ic = me.icn3d;
             if(me.bNode) return;
 
             let thisClass = this;
@@ -46191,7 +59632,7 @@ var icn3d = (function (exports) {
             });
         //    },
         //    clkMn2_saveselection: function() {
-            me.myEventCls.onIds("#" + me.pre + "mn2_saveselection", "click", function(e) { me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn2_saveselection","#" + me.pre + "tool_saveselection"], "click", function(e) { me.icn3d;
                me.htmlCls.dialogCls.openDlg('dl_saveselection', 'Save the selected');
             });
         //    },
@@ -46244,22 +59685,15 @@ var icn3d = (function (exports) {
             me.myEventCls.onIds("#" + me.pre + "mn6_distTwoSets", "click", function(e) { let ic = me.icn3d;
                 me.htmlCls.dialogCls.openDlg('dl_disttwosets', 'Measure the distance between two sets');
 
-                if(ic.bSetChainsAdvancedMenu === undefined || !ic.bSetChainsAdvancedMenu) {
-                   let prevHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
-                   ic.definedSetsCls.setPredefinedInMenu();
-                   ic.bSetChainsAdvancedMenu = true;
-                   ic.hAtoms = me.hashUtilsCls.cloneHash(prevHAtoms);
-                }
-                let definedAtomsHtml = ic.definedSetsCls.setAtomMenu(['protein']);
-                if($("#" + me.pre + "atomsCustomDist").length) {
-                    $("#" + me.pre + "atomsCustomDist").html("  <option value='selected'>selected</option>" + definedAtomsHtml);
-                }
-                if($("#" + me.pre + "atomsCustomDist2").length) {
-                    $("#" + me.pre + "atomsCustomDist2").html("  <option value='selected' selected>selected</option>" + definedAtomsHtml);
-                }
+                thisClass.setSetsMenus();
 
-               $("#" + me.pre + "atomsCustomDist").resizable();
-               $("#" + me.pre + "atomsCustomDist2").resizable();
+               ic.bMeasureDistance = true;
+            });
+
+            me.myEventCls.onIds("#" + me.pre + "mn6_distManySets", "click", function(e) { let ic = me.icn3d;
+                me.htmlCls.dialogCls.openDlg('dl_distmanysets', 'Measure the pairwise distance among many sets');
+
+                thisClass.setSetsMenus(true);
 
                ic.bMeasureDistance = true;
             });
@@ -46277,7 +59711,7 @@ var icn3d = (function (exports) {
             });
         //    },
         //    clkMn2_selectedcenter: function() {
-            me.myEventCls.onIds(["#" + me.pre + "mn2_selectedcenter", "#" + me.pre + "zoomin_selection"], "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn2_selectedcenter", "#" + me.pre + "zoomin_selection", "#" + me.pre + "tool_selectedcenter"], "click", function(e) { let ic = me.icn3d;
                //thisClass.setLogCmd('zoom selection', true);
                ic.transformCls.zoominSelection();
                ic.drawCls.draw();
@@ -46293,7 +59727,7 @@ var icn3d = (function (exports) {
             });
         //    },
         //    clkMn6_resetOrientation: function() {
-            me.myEventCls.onIds(["#" + me.pre + "mn6_resetOrientation", "#" + me.pre + "resetOrientation"], "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn6_resetOrientation", "#" + me.pre + "resetOrientation", "#" + me.pre + "tool_resetOrientation"], "click", function(e) { let ic = me.icn3d;
                //thisClass.setLogCmd('reset orientation', true);
                ic.transformCls.resetOrientation();
                //ic.setColorCls.applyOriginalColor();
@@ -46315,6 +59749,10 @@ var icn3d = (function (exports) {
         //    },
         //    clkMn6_sidebyside: function() {
             me.myEventCls.onIds("#" + me.pre + "mn6_sidebyside", "click", function(e) { let ic = me.icn3d;
+               if(ic.bInputfile) {
+                    alert("Side-by-Side does NOT work when the input is from a local file.");
+                    return;
+               }
                let url = ic.shareLinkCls.shareLinkUrl(undefined);
                //if(url.indexOf('http') !== 0) {
                //    alert("The url is more than 4000 characters and may not work.");
@@ -46411,6 +59849,17 @@ var icn3d = (function (exports) {
             me.myEventCls.onIds("#" + me.pre + "mn6_bkgdBlack", "click", function(e) { let ic = me.icn3d;
                ic.setStyleCls.setBackground('black');
             });
+
+            me.myEventCls.onIds("#" + me.pre + "tool_bkgd", "click", function(e) { let ic = me.icn3d;
+                if(ic.opts['background'] == 'black') {
+                    ic.setStyleCls.setBackground('white');
+                }
+                else {
+                    ic.setStyleCls.setBackground('black');
+                }
+             });
+
+            ic.opts['background']; 
         //    },
         //    clkMn6_bkgdGrey: function() {
             me.myEventCls.onIds("#" + me.pre + "mn6_bkgdGrey", "click", function(e) { let ic = me.icn3d;
@@ -46418,7 +59867,7 @@ var icn3d = (function (exports) {
             });
         //    },
         //    clkMn6_bkgdWhite: function() {
-            me.myEventCls.onIds("#" + me.pre + "mn6_bkgdWhite", "click", function(e) { let ic = me.icn3d;
+            me.myEventCls.onIds(["#" + me.pre + "mn6_bkgdWhite", "#" + me.pre + "tool_bkgdWhite"], "click", function(e) { let ic = me.icn3d;
                ic.setStyleCls.setBackground('white');
             });
         //    },
@@ -46552,12 +60001,8 @@ var icn3d = (function (exports) {
         //    },
         //    clkMn6_hbondsYes: function() {
             me.myEventCls.onIds(["#" + me.pre + "mn6_hbondsYes", "#" + me.pre + "hbondsYes"], "click", function(e) { let ic = me.icn3d;
-                if(ic.bSetChainsAdvancedMenu === undefined || !ic.bSetChainsAdvancedMenu) {
-                   let prevHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
-                   ic.definedSetsCls.setPredefinedInMenu();
-                   ic.bSetChainsAdvancedMenu = true;
-                   ic.hAtoms = me.hashUtilsCls.cloneHash(prevHAtoms);
-                }
+                thisClass.SetChainsAdvancedMenu();
+
                 let definedAtomsHtml = ic.definedSetsCls.setAtomMenu(['protein']);
                 if($("#" + me.pre + "atomsCustomHbond").length) {
                     $("#" + me.pre + "atomsCustomHbond").html("  <option value='non-selected' selected>non-selected</option><option value='selected'>selected</option>" + definedAtomsHtml);
@@ -46644,7 +60089,7 @@ var icn3d = (function (exports) {
             me.myEventCls.onIds("#" + me.pre + "mn6_ssbondsYes", "click", function(e) { let ic = me.icn3d;
                let select = "disulfide bonds";
                thisClass.setLogCmd(select, true);
-               ic.annoSsbondCls.showSsbonds();
+               ic.showInterCls.showSsbonds();
             });
         //    },
         //    clkMn6_ssbondsExport: function() {
@@ -46729,7 +60174,8 @@ var icn3d = (function (exports) {
               }
           }
           if(ic.bAddLogs && me.cfg.showcommand) {
-              ic.logs.push(str);
+              let finalStr = (bSetCommand) ? str : '[comment] ' + str;
+              ic.logs.push(finalStr);
               // move cursor to the end, and scroll to the end
               $("#" + me.pre + "logtext").val("> " + ic.logs.join("\n> ") + "\n> ").scrollTop($("#" + me.pre + "logtext")[0].scrollHeight);
           }
@@ -46784,7 +60230,7 @@ var icn3d = (function (exports) {
                 html += tdStr + "<div style='position:relative; margin-left:6px;'>" + str1;
                 html += "<div class='icn3d-commandTitle' style='min-width:40px; margin-top: 3px; white-space: nowrap;'>" + str2;
 
-                html += tdStr + '<div class="icn3d-commandTitle" style="white-space:nowrap; margin-top:10px; border-left:solid 1px #888888"><span id="' + me.pre +  'selection_expand" class="icn3d-expand icn3d-link" title="Expand">' + me.htmlCls.space2 + 'Toolbar <span class="ui-icon ui-icon-plus" style="width:15px"></span>' + me.htmlCls.space2 + '</span><span id="' + me.pre +  'selection_shrink" class="icn3d-shrink icn3d-link" style="display:none;" title="Shrink">' + me.htmlCls.space2 + 'Toolbar <span class="ui-icon ui-icon-minus" style="width:15px"></span>' + me.htmlCls.space2 + '</span></div></td>';
+                html += tdStr + '<div class="icn3d-commandTitle" style="white-space:nowrap; margin-top:10px; border-left:solid 1px #888888"><span id="' + me.pre +  'selection_expand" class="icn3d-expand icn3d-link" style="display:block;" title="Expand">' + me.htmlCls.space2 + 'Toolbar <span class="ui-icon ui-icon-plus" style="width:15px"></span>' + me.htmlCls.space2 + '</span><span id="' + me.pre +  'selection_shrink" class="icn3d-shrink icn3d-link" style="display:none;" title="Shrink">' + me.htmlCls.space2 + 'Toolbar <span class="ui-icon ui-icon-minus" style="width:15px"></span>' + me.htmlCls.space2 + '</span></div></td>';
 
                 html += tdStr + '<div class="icn3d-commandTitle" style="white-space:nowrap; margin-top:8px; border-left:solid 1px #888888">' + me.htmlCls.space2 + '<input type="text" id="' + me.pre + 'search_seq" size="10" placeholder="one-letter seq."> <button style="white-space:nowrap;" id="' + me.pre + 'search_seq_button">Search</button> <a style="text-decoration: none;" href="' + me.htmlCls.baseUrl + 'icn3d/icn3d.html#selectb" target="_blank" title="Specification tips">?</a></div></td>';
             //}
@@ -46800,7 +60246,8 @@ var icn3d = (function (exports) {
 
             html += me.htmlCls.divStr + "viewer' style='position:relative; width:100%; height:100%; background-color: " + me.htmlCls.GREYD + ";'>";
 
-            html += me.htmlCls.divStr + "legend' class='icn3d-text icn3d-legend'></div>";
+            // deprecated, use the dialog dl_legend instead
+            //html += me.htmlCls.divStr + "legend' class='icn3d-text icn3d-legend'></div>";
 
             html += me.htmlCls.divStr + "mnLogSection'>";
             html += "<div style='height: " + me.htmlCls.MENU_HEIGHT + "px;'></div>";
@@ -46922,6 +60369,8 @@ var icn3d = (function (exports) {
             // show title at the top left corner
             html += me.htmlCls.divStr + "title' class='icn3d-commandTitle' style='font-size:1.2em; font-weight:normal; position:absolute; z-index:1; float:left; display:block; margin: 12px 0px 0px 40px; color:" + titleColor + "; width:" +(me.htmlCls.WIDTH - 40).toString() + "px'></div>";
             html += me.htmlCls.divStr + "viewer' style='position:relative; width:100%; height:100%; background-color: " + me.htmlCls.GREYD + ";'>";
+            // don't show legend in mobile
+            //html += me.htmlCls.divStr + "legend' class='icn3d-text icn3d-legend'></div>";
             html += me.htmlCls.divStr + "mnLogSection'>";
             html += "<div style='height: " + me.htmlCls.MENU_HEIGHT + "px;'></div>";
             html += "</div>";
@@ -46984,15 +60433,16 @@ var icn3d = (function (exports) {
 
             let html = "";
 
-            html += me.htmlCls.divStr + "selection' style='display:none;'><div style='position:absolute; z-index:555; float:left; display:table-row; margin: 32px 0px 0px 3px;'>";
-            html += "<table style='margin-top: 3px; width:100px;'><tr valign='center'>";
+            html += me.htmlCls.divStr + "selection' style='display:none;'><div style='position:absolute; z-index:555; float:left; display:table-row; margin: 32px 0px 0px 0px;'>";
+            //html += "<table style='margin-top: 3px; width:100px;'>";
+            html += "<table style='margin-top: 3px; width:770px; background-color:#EEE;'>";
 
             html += this.setTools_base();
 
             // add custom buttons here
             // ...
 
-            html += "</tr></table>";
+            html += "</table>";
             html += "</div></div>";
 
             return html;
@@ -47006,12 +60456,84 @@ var icn3d = (function (exports) {
             return "<div style='margin:3px 0px 0px 10px;'><button style='-webkit-appearance:" + buttonStyle + "; height:36px;" + bkgdColor + "' id='" + me.pre + id + "'><span style='white-space:nowrap;" + color + "' class='icn3d-commandTitle' title='" + title + "'>" + text + "</span></button></div>";
         }
 
+        setIcon(iconType, id, title, iconStyle, url, bText) { let me = this.icn3dui;
+            if(me.bNode) return '';
+
+            let color = 'color:#1c94c4; ';
+            let bkgdColor = ' background-color:#EEE; ';
+            let cssCursor = (iconType == 'text') ? '' : 'cursor:pointer;';
+
+            //let iconHtml = '<i id="' + me.pre + id + '" class="fa fa-' + iconStyle + '" title="' + title + '" style="font-size:20px; ' + color + bkgdColor + cssCursor + cssBorder + '"></i>';
+            let iconHtml;
+            if(bText) {
+                iconHtml = '<div id="' + me.pre + id + '" title="' + title + '" style="font-family: Arial, Helvetica, sans-serif; font-size:16px; width:16px; height:16px;' + color + bkgdColor + cssCursor + '">' + iconStyle + '</div>';
+            }
+            else {
+                iconHtml = '<i id="' + me.pre + id + '" class="las la-' + iconStyle + '" title="' + title + '" style="width:16px; height:16px;' + color + bkgdColor + cssCursor + '"></i>';
+            }
+
+            if(iconType == 'link') {
+                return '<a href="' + url + '" target="_blank">' + iconHtml + '</a>';
+            }
+            else {
+                return iconHtml;
+            }
+        }
+
         setTools_base() { let me = this.icn3dui;
             if(me.bNode) return '';
 
             // second row
-            let html = "";
+            let html = "<tr valign='center'>";
 
+            let iconType = 'regular';
+            let tdStr = "<td valign='top' align='center'>";
+            let tdStrBorder = "<td valign='top' align='center' style='border-left: solid 1px #888888'>";
+
+            // line-awesome: https://icons8.com/line-awesome
+            // File menu
+            html += tdStr + this.setIcon(iconType, 'tool_mmdbid', 'Input PDB or MMDB ID', 'id', undefined, true) + "</td>";
+            html += tdStr + this.setIcon(iconType, 'tool_pdbfile', 'Input PDB Files (appendable)', 'file-alt') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'tool_sharelink', 'Get Share Link', 'link') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'saveimage', 'Save iCn3D PNG Image', 'camera') + "</td>";
+
+            // Select menu
+            html += tdStrBorder + this.setIcon(iconType, 'tool_definedsets', 'Defined Sets', 'object-group') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'tool_aroundsphere', 'Select by Distance', 'dot-circle') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'tool_saveselection', 'Save Selection as a Set', 'save') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'toggleHighlight', 'Toggle Highlight', 'highlighter') + "</td>";
+
+            // View menu
+            html += tdStrBorder + this.setIcon(iconType, 'show_selected', 'View Selection', 'eye') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'tool_selectedcenter', 'Zoom in Selection', 'search-plus') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'alternate', "Alternate the Structures by keying the letter 'a'", 'a', undefined, true) + "</td>";
+            html += tdStr + this.setIcon(iconType, 'tool_resetOrientation', 'Reset Orientation', 'undo-alt') + "</td>";
+
+            // Style menu
+            html += tdStrBorder + this.setIcon(iconType, 'tool_proteinsRibbon', 'Style Ribbon for proteins', 'dna') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'tool_proteinsSphere', 'Style Sphere for proteins', 'volleyball-ball') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'tool_surfaceVDW', 'Show Van der Waals Surface', 'cloud') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'tool_bkgd', 'Toggle Background Color', 'adjust') + "</td>";
+
+            // Color menu
+            html += tdStrBorder + this.setIcon(iconType, 'tool_clrRainbowChain', 'Color Rainbow for Chains', 'rainbow') + "</td>"; 
+            html += tdStr + this.setIcon(iconType, 'tool_clrSSGreen', 'Color by Secondary Structures', 'ring') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'tool_clrChain', 'Color by Chains', 'layer-group') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'tool_clrAtom', 'Color by Atoms', 'atom') + "</td>";
+
+            // Analysis menu
+            html += tdStrBorder + this.setIcon(iconType, 'tool_selectannotations', 'Sequences & Annotations', 'grip-lines') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'hbondsYes', 'Interactions', 'users') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'tool_delphi', 'Delphi Potentials', 'cloud-meatball') + "</td>";
+            html += tdStr + this.setIcon(iconType, 'removeLabels', 'Remove Labels', 'remove-format') + "</td>";
+
+            // Help menu
+            html += tdStrBorder + this.setIcon('link', 'tool-gallery', 'Gallery', 'image', 'https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d.html#gallery') + "</td>";
+            html += tdStr + this.setIcon('link', 'tool-video', 'Videos', 'file-video', 'https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d.html#videos') + "</td>";
+            html += tdStr + this.setIcon('link', 'tool-github', 'iCn3D GitHub', 'code', 'https://github.com/ncbi/icn3d') + "</td>";
+            html += tdStr + this.setIcon('link', 'tool-hints', 'Transform Hints', 'info-circle', 'https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d.html#useicn3d') + "</td>";
+
+            /*
             let buttonStyle = me.utilsCls.isMobile() ? 'none' : 'button';
             let tdStr = "<td valign='top'>";
 
@@ -47032,6 +60554,8 @@ var icn3d = (function (exports) {
             if(me.cfg.cid === undefined) {
                 html += tdStr + this.setButton(buttonStyle, 'removeLabels', 'Remove Labels', 'Remove<br/>Labels') + "</td>";
             }
+    */
+            html += "</tr>";
 
             return html;
         }
@@ -47067,13 +60591,13 @@ var icn3d = (function (exports) {
 
             $('.ui-widget-header').css({
                 'border': '1px solid ' + borderColor,
-                'background': bkgdColor + ' url("lib/images/' + bkgdImg + '") 50% 50% repeat-x',
+                'background': bkgdColor + ' url("https://www.ncbi.nlm.nih.gov/Structure/icn3d/lib/images/' + bkgdImg + '") 50% 50% repeat-x',
                 'color':'#fff',
                 'font-weight':'bold'
             });
 
             $('.ui-button .ui-icon').css({
-                'background-image': 'url(lib/images/' + iconImg + ')'
+                'background-image': 'url(https://www.ncbi.nlm.nih.gov/Structure/icn3d/lib/images/' + iconImg + ')'
             });
 
             $('.ui-state-active a, .ui-state-active a:link, .ui-state-active a:visited').css({
@@ -47124,26 +60648,36 @@ var icn3d = (function (exports) {
 
             html += "<ul class='icn3d-mn-item'>";
             html += "<li><a href='https://www.ncbi.nlm.nih.gov/structure' target='_blank'>Search Structure " + me.htmlCls.wifiStr + "</a></li>";
+
+            html += "<li><span>Search Similar</span>";
+            html += "<ul>";
+            html += me.htmlCls.setHtmlCls.getLink('mn1_vastplus', 'NCBI VAST+ (PDB Assembly)' + me.htmlCls.wifiStr);
+            html += me.htmlCls.setHtmlCls.getLink('mn1_vast', 'NCBI VAST (PDB)' + me.htmlCls.wifiStr);
+            html += me.htmlCls.setHtmlCls.getLink('mn1_foldseek', 'Foldseek (PDB & AalphaFold)' + me.htmlCls.wifiStr);
+            html += "</ul>";
+
             html += "<li><span>Retrieve by ID</span>";
             html += "<ul>";
             html += me.htmlCls.setHtmlCls.getLink('mn1_mmdbid', 'MMDB ID ' + me.htmlCls.wifiStr);
             html += me.htmlCls.setHtmlCls.getLink('mn1_mmtfid', 'MMTF ID ' + me.htmlCls.wifiStr);
             html += me.htmlCls.setHtmlCls.getLink('mn1_pdbid', 'PDB ID ' + me.htmlCls.wifiStr);
             html += me.htmlCls.setHtmlCls.getLink('mn1_afid', 'AlphaFold UniProt ID ' + me.htmlCls.wifiStr);
+            html += me.htmlCls.setHtmlCls.getLink('mn1_mmdbafid', 'MMDB or AlphaFold IDs' + me.htmlCls.wifiStr);
             if(!me.cfg.simplemenu) {
                 html += me.htmlCls.setHtmlCls.getLink('mn1_opmid', 'OPM PDB ID ' + me.htmlCls.wifiStr);
                 html += me.htmlCls.setHtmlCls.getLink('mn1_mmcifid', 'mmCIF ID ' + me.htmlCls.wifiStr);
                 html += me.htmlCls.setHtmlCls.getLink('mn1_gi', 'NCBI gi ' + me.htmlCls.wifiStr);
             }
-            html += me.htmlCls.setHtmlCls.getLink('mn1_uniprotid', 'UniProt ID ' + me.htmlCls.wifiStr);
+            //html += me.htmlCls.setHtmlCls.getLink('mn1_uniprotid', 'UniProt ID ' + me.htmlCls.wifiStr);
             html += me.htmlCls.setHtmlCls.getLink('mn1_cid', 'PubChem CID ' + me.htmlCls.wifiStr);
+            
             html += "</ul>";
             html += "</li>";
             html += "<li><span>Open File</span>";
             html += "<ul>";
     //        html += me.htmlCls.setHtmlCls.getLink('mn1_pdbfile', 'PDB File');
     //        html += me.htmlCls.setHtmlCls.getLink('mn1_pdbfile_app', 'PDB File (append)');
-            html += me.htmlCls.setHtmlCls.getLink('mn1_pdbfile_app', 'PDB File (appendable)');
+            html += me.htmlCls.setHtmlCls.getLink('mn1_pdbfile_app', 'PDB Files (appendable)');
             if(!me.cfg.simplemenu) html += me.htmlCls.setHtmlCls.getLink('mn1_mmciffile', 'mmCIF File');
             html += me.htmlCls.setHtmlCls.getLink('mn1_mol2file', 'Mol2 File');
             html += me.htmlCls.setHtmlCls.getLink('mn1_sdffile', 'SDF File');
@@ -47172,18 +60706,22 @@ var icn3d = (function (exports) {
             html += "<li><span>Align</span>";
             html += "<ul>";
             html += me.htmlCls.setHtmlCls.getLink('mn1_blast_rep_id', 'Sequence to Structure');
-            html += me.htmlCls.setHtmlCls.getLink('mn1_align', 'Structure to Structure ' + me.htmlCls.wifiStr);
-            //html += me.htmlCls.setHtmlCls.getLink('mn1_chainalign', 'Chain to Chain');
+            //html += me.htmlCls.setHtmlCls.getLink('mn1_align', 'Structure to Structure ' + me.htmlCls.wifiStr);
+            html += "<li><span>Structure to Structure</span>";
+            html += "<ul>";
+            html += me.htmlCls.setHtmlCls.getLink('mn1_align', 'Two PDB Structures ' + me.htmlCls.wifiStr);
+            html += me.htmlCls.setHtmlCls.getLink('mn1_alignaf', 'Two AlphaFold Structures ' + me.htmlCls.wifiStr);
+            html += "</ul>";
+
             html += me.htmlCls.setHtmlCls.getLink('mn1_chainalign', 'Multiple Chains ' + me.htmlCls.wifiStr);
 
             html += "</ul>";
             html += "</li>";
 
-            //html += me.htmlCls.setHtmlCls.getLink('mn2_realignonseqalign', 'Realign Selection');
-
             html += "<li id='" + me.pre + "mn2_realignWrap'><span>Realign Selection</span>";
             html += "<ul>";
-            html += me.htmlCls.setHtmlCls.getRadio('mn2_realign', 'mn2_realignonseqalign', 'on Sequence Alignment ' + me.htmlCls.wifiStr, true);
+            html += me.htmlCls.setHtmlCls.getRadio('mn2_realign', 'mn2_realignonstruct', 'by Structure Alignment ' + me.htmlCls.wifiStr, true);
+            html += me.htmlCls.setHtmlCls.getRadio('mn2_realign', 'mn2_realignonseqalign', 'by Sequence Alignment ' + me.htmlCls.wifiStr);
             html += me.htmlCls.setHtmlCls.getRadio('mn2_realign', 'mn2_realignresbyres', 'Residue by Residue');
             html += "</ul>";
             html += "</li>";
@@ -47587,6 +61125,17 @@ var icn3d = (function (exports) {
                 html += me.htmlCls.setHtmlCls.getRadio('mn3_nucl', 'mn3_nuclNo', 'Hide');
                 html += "</ul>";
                 html += "</li>";
+
+                html += "<li><span>Nucl. Bases</span>";
+                html += "<ul>";
+
+                html += me.htmlCls.setHtmlCls.getRadio('mn3_ntbase', 'mn3_ntbaseLines', 'Lines');
+                html += me.htmlCls.setHtmlCls.getRadio('mn3_ntbase', 'mn3_ntbaseStick', 'Stick');
+                html += me.htmlCls.setHtmlCls.getRadio('mn3_ntbase', 'mn3_ntbaseBallstick', 'Ball and Stick');
+                html += me.htmlCls.setHtmlCls.getRadio('mn3_ntbase', 'mn3_ntbaseSphere', 'Sphere');
+                html += me.htmlCls.setHtmlCls.getRadio('mn3_ntbase', 'mn3_ntbaseNo', 'Hide', true);
+                html += "</ul>";
+                html += "</li>";
             }
 
             html += "<li><span>Chemicals</span>";
@@ -47606,15 +61155,16 @@ var icn3d = (function (exports) {
             html += "</ul>";
             html += "</li>";
 
-            if(me.cfg.cid !== undefined) {
+            //if(me.cfg.cid !== undefined) {
                 html += "<li><span>Hydrogens</span>";
                 html += "<ul>";
                 html += me.htmlCls.setHtmlCls.getRadio('mn3_hydrogens', 'mn3_hydrogensYes', 'Show', true);
                 html += me.htmlCls.setHtmlCls.getRadio('mn3_hydrogens', 'mn3_hydrogensNo', 'Hide');
                 html += "</ul>";
                 html += "</li>";
-            }
-            else {
+            //}
+
+            if(me.cfg.cid === undefined) {
                 html += "<li><span>Glycans</span>";
                 html += "<ul>";
                 html += me.htmlCls.setHtmlCls.getRadio('mn3_glycansCart', 'mn3_glycansCartYes', 'Show Cartoon');
@@ -47664,6 +61214,9 @@ var icn3d = (function (exports) {
 
             html += "<li><span>Surface Opacity</span>";
             html += "<ul>";
+
+            html += "<li><span>Fast Transparency</span>";
+            html += "<ul>";
             html += me.htmlCls.setHtmlCls.getRadio('mn5_opacity', 'mn5_opacity10', '1.0', true);
 
             for(let i = 9; i > 0; --i) {
@@ -47671,6 +61224,19 @@ var icn3d = (function (exports) {
             }
             html += "</ul>";
             html += "</li>";
+
+            html += "<li><span>Slow Transparency</span>";
+            html += "<ul>";
+            html += me.htmlCls.setHtmlCls.getRadio('mn5_opacityslow', 'mn5_opacityslow10', '1.0', true);
+
+            for(let i = 9; i > 0; --i) {
+                html += me.htmlCls.setHtmlCls.getRadio('mn5_opacityslow', 'mn5_opacityslow0' + i, '0.' + i);
+            }
+            html += "</ul>";
+            html += "</li>";
+
+            html += "</ul>"; // end of Surface Opacity
+
             html += "<li><span>Surface Wireframe</span>";
             html += "<ul>";
             html += me.htmlCls.setHtmlCls.getRadio('mn5_wireframe', 'mn5_wireframeYes', 'Yes');
@@ -47678,7 +61244,7 @@ var icn3d = (function (exports) {
             html += "</ul>";
             html += "</li>";
 
-            if(me.cfg.cid === undefined && me.cfg.align === undefined && me.cfg.chainalign === undefined) {
+            if(me.cfg.cid === undefined && me.cfg.align === undefined && me.cfg.chainalign === undefined && me.cfg.mmdbaf === undefined) {
                 if(!me.cfg.simplemenu) {
                     html += "<li>-</li>";
 
@@ -47988,6 +61554,7 @@ var icn3d = (function (exports) {
                 html += "<ul>";
                 html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrRainbow', 'for Selection');
                 html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrRainbowChain', 'for Chains');
+                html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrRainbowSets', 'for Sets');
                 html += "</ul>";
 
                 if(!me.cfg.simplemenu) {
@@ -47996,6 +61563,7 @@ var icn3d = (function (exports) {
                     html += "<ul>";
                     html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrSpectrum', 'for Selection');
                     html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrSpectrumChain', 'for Chains');
+                    html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrSpectrumSets', 'for Sets');
                     html += "</ul>";
                 }
 
@@ -48028,16 +61596,18 @@ var icn3d = (function (exports) {
 
                 if(!me.cfg.simplemenu) html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrArea', 'Solvent<br><span style="padding-left:1.5em;">Accessibility</span>');
 
+                html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrStructure', 'Structure');
+
                 if(me.cfg.align !== undefined || me.cfg.chainalign !== undefined || me.cfg.blast_rep_id !== undefined) {
-                  html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrChain', 'Chain');
+                    html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrChain', 'Chain');
                 }
                 else {
-                  html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrChain', 'Chain', true);
+                    html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrChain', 'Chain', true);
                 }
 
-                if(me.cfg.mmdbid !== undefined || me.cfg.gi !== undefined) {
+                //if(me.cfg.mmdbid !== undefined || me.cfg.gi !== undefined) {
                   html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrdomain', '3D Domain');
-                }
+                //}
 
                 if(me.cfg.cid === undefined) {
                     if(!me.cfg.simplemenu) {
@@ -48068,9 +61638,9 @@ var icn3d = (function (exports) {
                 }
 
                 //if(me.cfg.afid) html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrConfidence', 'AF Confidence');
-                if(!me.cfg.mmtfid && !me.cfg.pdbid && !me.cfg.opmid && !me.cfg.mmdbid && !me.cfg.gi && !me.cfg.uniprotid && !me.cfg.blast_rep_id && !me.cfg.cid && !me.cfg.mmcifid && !me.cfg.align && !me.cfg.chainalign) {
+                //if(!me.cfg.mmtfid && !me.cfg.pdbid && !me.cfg.opmid && !me.cfg.mmdbid && !me.cfg.gi && !me.cfg.uniprotid && !me.cfg.blast_rep_id && !me.cfg.cid && !me.cfg.mmcifid && !me.cfg.align && !me.cfg.chainalign) {
                     html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn4_clrConfidence', 'AlphaFold<br><span style="padding-left:1.5em;">Confidence</span>');
-                }
+                //}
             }
             else {
                 //if(!me.cfg.hidelicense) html += me.htmlCls.setHtmlCls.getRadio('mn4_clr', 'mn1_delphi2', 'DelPhi<br><span style="padding-left:1.5em;">Potential ' + me.htmlCls.licenseStr + '</span>');
@@ -48181,6 +61751,7 @@ var icn3d = (function (exports) {
             html += "<ul>";
             html += me.htmlCls.setHtmlCls.getRadio('mn6_distance', 'mn6_distanceYes', 'between Two Atoms');
             html += me.htmlCls.setHtmlCls.getRadio('mn6_distance', 'mn6_distTwoSets', 'between Two Sets');
+            html += me.htmlCls.setHtmlCls.getRadio('mn6_distance', 'mn6_distManySets', 'Among Many Sets');
             html += me.htmlCls.setHtmlCls.getRadio('mn6_distance', 'mn6_distanceNo', 'Hide', true);
             html += "</ul>";
             html += "</li>";
@@ -48262,7 +61833,7 @@ var icn3d = (function (exports) {
                   html += "<li id='" + me.pre + "assemblyWrapper'><span>Assembly</span>";
                   html += "<ul>";
 
-                  if(me.cfg.bu == 0) {
+                  if(!me.cfg.bu) {
                     html += me.htmlCls.setHtmlCls.getRadio('mn6_assembly', 'mn6_assemblyYes', 'Biological Assembly');
                     html += me.htmlCls.setHtmlCls.getRadio('mn6_assembly', 'mn6_assemblyNo', 'Asymmetric Unit', true);
                   }
@@ -48383,6 +61954,7 @@ var icn3d = (function (exports) {
                 html += liStr + me.htmlCls.baseUrl + "icn3d/icn3d.html#addclass' target='_blank'>Add New Classes</a></li>";
                 html += liStr + me.htmlCls.baseUrl + "icn3d/icn3d.html#modifyfunction' target='_blank'>Modify Functions</a></li>";
                 html += liStr + me.htmlCls.baseUrl + "icn3d/icn3d.html#restfulapi' target='_blank'>RESTful APIs</a></li>";
+                html += liStr + me.htmlCls.baseUrl + "icn3d/icn3d.html#contributors' target='_blank'>Codeathon Contributors</a></li>";
                 html += "</ul>";
                 html += "</li>";
             }
@@ -48421,7 +61993,11 @@ var icn3d = (function (exports) {
             html += "</ul>";
             html += "</li>";
 
-            if(!me.cfg.simplemenu) html += liStr + me.htmlCls.baseUrl + "icn3d/icn3d.html#HowToUseStep5' target='_blank'>Selection Hints</a></li>";
+            if(!me.cfg.simplemenu) {
+                html += liStr + me.htmlCls.baseUrl + "icn3d/icn3d.html#HowToUseStep5' target='_blank'>Selection Hints</a></li>";
+
+                html += liStr + "https://support.nlm.nih.gov/support/create-case/' target='_blank'>Write to Help Desk</a></li>";
+            }
 
             html += "<li><br/></li>";
             html += "</ul>";
@@ -48483,7 +62059,8 @@ var icn3d = (function (exports) {
 
             // adda save button
             if(this.dialogHashSave === undefined || !this.dialogHashSave.hasOwnProperty(id)) {
-                $("#" + id).parent().children('.ui-dialog-titlebar').append("<span pid='" + id + "' class='icn3d-saveicon ui-icon ui-icon-disk' title='Save as an HTML file'></span>");
+                $("#" + id).parent().children('.ui-dialog-titlebar')
+                .append("<div pid='" + id + "' class='icn3d-saveicon ui-icon ui-icon-disk' title='Save as an HTML file' style='background-color:white; background-image: url(&quot;https://www.ncbi.nlm.nih.gov/Structure/icn3d/lib/images/ui-icons_228ef1_256x240.png&quot;);'></div>");
 
                 if(this.dialogHashSave === undefined) this.dialogHashSave = {};
                 this.dialogHashSave[id] = 1;
@@ -48495,7 +62072,8 @@ var icn3d = (function (exports) {
 
             // adda save button
             if(this.dialogHashHide === undefined || !this.dialogHashHide.hasOwnProperty(id)) {
-                $("#" + id).parent().children('.ui-dialog-titlebar').append("<span pid='" + id + "' class='icn3d-hideicon ui-icon ui-icon-arrowthick-2-ne-sw' title='Resize the window'></span>");
+                $("#" + id).parent().children('.ui-dialog-titlebar')
+                .append("<div pid='" + id + "' class='icn3d-hideicon ui-icon ui-icon-arrowthick-2-ne-sw' title='Resize the window' style='background-color:white; background-image: url(&quot;https://www.ncbi.nlm.nih.gov/Structure/icn3d/lib/images/ui-icons_228ef1_256x240.png&quot;);'></div>");
 
                 if(this.dialogHashHide === undefined) this.dialogHashHide = {};
                 this.dialogHashHide[id] = 1;
@@ -48909,7 +62487,10 @@ var icn3d = (function (exports) {
                         height = 500;
                     }
                     else if(id === me.pre + 'dl_rmsd') {
-                        position ={ my: "left top", at: "right bottom-90", of: "#" + me.pre + "canvas", collision: "none" };
+                        position ={ my: "right top", at: "right top", of: "#" + me.pre + "canvas", collision: "none" };
+                    }
+                    else if(id === me.pre + 'dl_legend') {
+                        position ={ my: "right top", at: "right-20 top+60", of: "#" + me.pre + "canvas", collision: "none" };
                     }
                     else if(id === me.pre + 'dl_symd') {
                         position ={ my: "left top", at: "right-200 bottom-200", of: "#" + me.pre + "canvas", collision: "none" };
@@ -49110,6 +62691,36 @@ var icn3d = (function (exports) {
 
             html += me.htmlCls.setHtmlCls.setAdvanced(2);
 
+            html += me.htmlCls.divStr + "dl_vastplus' class='" + dialogClass + "' style='max-width:500px'>";
+            html += "Note: <b>VAST+</b> finds other macromolecular structures that have a similar biological unit. To do this, VAST+ takes into consideration the complete set of 3D domains that VAST identified within a query structure, throughout all of its component protein molecules, and finds other macromolecular structures that have a similar set of proteins/3D domains.<br><br>"; 
+            html += "PDB ID: " + me.htmlCls.inputTextStr + "id='" + me.pre + "vastpluspdbid' value='1HHO' size=8><br>";
+            html += me.htmlCls.buttonStr + "reload_vastplus'>VAST+</button>";
+            html += "</div>";
+
+            html += me.htmlCls.divStr + "dl_vast' class='" + dialogClass + "' style='max-width:500px'>";
+            html += 'Note: <b>VAST</b> identifies 3D domains (substructures) within each protein structure in the Molecular Modeling Database (MMDB), and then finds other protein structures that have one or more similar 3D domains, using purely geometric criteria. You have two ways to do a VAST search.<br><br>'; 
+            html += '<b>Optione 1</b>, search with PDB ID and chain name:<br>'; 
+            html += "PDB ID: " + me.htmlCls.inputTextStr + "id='" + me.pre + "vastpdbid' value='1HHO' size=8> &nbsp;&nbsp;";
+            html += "Chain Name: " + me.htmlCls.inputTextStr + "id='" + me.pre + "vastchainid' value='A' size=8> <br>";
+            html += me.htmlCls.buttonStr + "reload_vast'>VAST</button><br><br>";
+
+            html += '<b>Optione 2</b>, search with a PDB file:<br>'; 
+            html += '<form method=post enctype=multipart/form-data action="https://www.ncbi.nlm.nih.gov/Structure/vast/VSMmdb.cgi" name="newvs" target="_blank">';
+            html += "PDB File: " + me.htmlCls.inputFileStr + " name='pdbfile' size=8><br>";
+            html += "Searching against: <input type='radio' name='dataset' value='Non-redundant subset' checked> Medium-redundancy Subset of PDB <a href='https://www.ncbi.nlm.nih.gov/Structure/VAST/vasthelp.html#VASTNR' title='Medium-redundancy Subset' target='_blank'>?</a> <input type='radio' name='dataset' value='All'>All of PDB <br>";
+            // the submit value has to be "Submit" in order to make the backend cgi works
+            //html += '<input type="submit" name="cmdVSMmdb" value="VAST Search"></input>';
+            html += '<input type="submit" name="cmdVSMmdb" value="Submit"></input>';
+            html += "</form>";
+
+            html += "</div>";
+
+            html += me.htmlCls.divStr + "dl_foldseek' class='" + dialogClass + "' style='max-width:500px'>";
+            html += 'Note: You can search similar PDB or AlphaFold structures for any structure at the fast <a href="https://search.foldseek.com/search" target="_blank">Foldseek</a> web server. <br><br>Once you see the structure neighbors, you can view the alignment in iCn3D by inputing a list of chain IDs below. <br><br>The PDB chain IDs are the same as the record names such as "1hho_A". The AlphaFold chain IDs are the UniProt ID plus "_A". For example, the UniProt ID for the record name "AF-P69905-F1-model_v2" is "P69905".<br><br>'; 
+            html += "Chain ID List: " + me.htmlCls.inputTextStr + "id='" + me.pre + "foldseekchainids' value='P69905_A,P01942_A,1HHO_A' size=30> ";
+            html += me.htmlCls.buttonStr + "reload_foldseek'>Align</button>";
+            html += "</div>";
+
             html += me.htmlCls.divStr + "dl_mmtfid' class='" + dialogClass + "'>";
             html += "MMTF ID: " + me.htmlCls.inputTextStr + "id='" + me.pre + "mmtfid' value='1TUP' size=8> ";
             html += me.htmlCls.buttonStr + "reload_mmtf'>Load</button>";
@@ -49127,9 +62738,9 @@ var icn3d = (function (exports) {
             let afid = (me.cfg.afid) ? me.cfg.afid : 'Q76EI6';
 
             html += "<a href='https://alphafold.ebi.ac.uk/' target='_blank'>AlphaFold Uniprot</a> ID: " + me.htmlCls.inputTextStr + "id='" + me.pre + "afid' value='" + afid + "' size=10><br><br>";
-            html += me.htmlCls.buttonStr + "reload_af'>Load Structure</button>" 
-                + me.htmlCls.buttonStr + "reload_afmap' style='margin-left:30px'>Load Half PAE Map</button>"
-                + me.htmlCls.buttonStr + "reload_afmapfull' style='margin-left:30px'>Load Full PAE Map (slow)</button>";
+            html += me.htmlCls.buttonStr + "reload_af'>Load Structure</button><br><br>"; 
+            html += "PAE Map: " + me.htmlCls.buttonStr + "reload_afmap'>Load Half</button>"
+                + me.htmlCls.buttonStr + "reload_afmapfull' style='margin-left:30px'>Load Full (slow)</button>";
             html += "</div>";
 
             html += me.htmlCls.divStr + "dl_opmid' class='" + dialogClass + "'>";
@@ -49144,7 +62755,7 @@ var icn3d = (function (exports) {
             html += "</div>";
 
             html += me.htmlCls.divStr + "dl_pdbfile_app' class='" + dialogClass + "'>";
-            html += "PDB File: " + me.htmlCls.inputFileStr + " id='" + me.pre + "pdbfile_app' size=8> ";
+            html += "Multiple PDB Files: <input type='file' multiple id='" + me.pre + "pdbfile_app' size=8> ";
             html += me.htmlCls.buttonStr + "reload_pdbfile_app'>Append</button>";
             html += "</div>";
 
@@ -49187,6 +62798,11 @@ var icn3d = (function (exports) {
             html += me.htmlCls.buttonStr + "reload_align_ori'>All Matching Molecules Superposed</button>" + me.htmlCls.space3 + me.htmlCls.buttonStr + "reload_align_refined'>Invariant Substructure Superposed</button>";
             html += "</div>";
 
+            html += me.htmlCls.divStr + "dl_alignaf' class='" + dialogClass + "'>";
+            html += "Enter two <a href='https://alphafold.ebi.ac.uk/' target='_blank'>AlphaFold Uniprot</a> IDs: <br/><br/>ID1: " + me.htmlCls.inputTextStr + "id='" + me.pre + "alignafid1' value='P41327' size=8>" + me.htmlCls.space3 + me.htmlCls.space3 + "ID2: " + me.htmlCls.inputTextStr + "id='" + me.pre + "alignafid2' value='P41331' size=8><br/><br/>";
+            html += me.htmlCls.buttonStr + "reload_alignaf'>Align</button>";
+            html += "</div>";
+
             html += me.htmlCls.divStr + "dl_chainalign' class='" + dialogClass + "'>";
         /*
             html += "Enter the PDB chain IDs in the form of pdbid_chain(e.g., 1HHO_A, case sensitive): <br/><br/>ID1: " + me.htmlCls.inputTextStr + "id='" + me.pre + "chainalignid1' value='1HHO_A' size=8>" + me.htmlCls.space3 + me.htmlCls.space3 + "ID2: " + me.htmlCls.inputTextStr + "id='" + me.pre + "chainalignid2' value='4N7N_A' size=8><br/><br/>";
@@ -49195,13 +62811,13 @@ var icn3d = (function (exports) {
             html += "</div>";
         */
             html += "<div style='width:550px'>";
-            html += "All chains will be aligned to the first chain in the comma-separated chain IDs. Each chain ID has the form of pdbid_chain(e.g., 1HHO_A, case sensitive).<br/><br/>";
-            html += "<b>Chain IDs</b>: " + me.htmlCls.inputTextStr + "id='" + me.pre + "chainalignids' value='1HHO_A,4N7N_A,2HCO_A' size=50><br/><br/>";
+            html += "All chains will be aligned to the first chain in the comma-separated chain IDs. Each chain ID has the form of PDBID_chain (e.g., 1HHO_A, case sensitive) or UniprotID (e.g., P69905 for AlphaFold structures).<br/><br/>";
+            html += "<b>Chain IDs</b>: " + me.htmlCls.inputTextStr + "id='" + me.pre + "chainalignids' value='P69905,P01942,1HHO_A' size=50><br/><br/>";
             html += "<b>Optional 1</b>, full chains are used for structure alignment<br/><br/>";
             html += "<b>Optional 2</b>, sequence alignment (followed by structure alignemnt) based on residue numbers in the First/Master chain: <br>" + me.htmlCls.inputTextStr + "id='" + me.pre + "resalignids' placeholder='1,5,10-50' size=50><br/><br/>";
-            html += "<b>Optional 3</b>, predefined alignment with residue numbers in each chain specified (one chain per line): <br><textarea id='" + me.pre + "predefinedres' rows='5' style='width: 100%; height: " +(me.htmlCls.LOG_HEIGHT) + "px; padding: 0px; border: 0px;' placeholder='1,5,10-50\n1,5,10-50\n1,5,10-50'></textarea><br/><br/>";
+            html += "<b>Optional 3</b>, predefined alignment with the first chain as the master. The rest chains are aligned to the master chain. Each alignment is defined as \" | \"-separated residue lists in one line. \"10-50\" means a range of residues from 10 to 50.<br><textarea id='" + me.pre + "predefinedres' rows='5' style='width: 100%; height: " +(me.htmlCls.LOG_HEIGHT) + "px; padding: 0px; border: 0px;' placeholder='1,5,10-50 | 1,5,10-50     \n2,6,11-51 | 1,5,10-50'></textarea><br/><br/>";
             html += me.htmlCls.buttonStr + "reload_chainalign_asym'>Align Asymmetric Unit</button>" + me.htmlCls.buttonStr + "reload_chainalign' style='margin-left:30px'>Align Biological Unit</button><br/><br/>";
-            html += "(Note: To align chains in custom PDB files, you could concatenate PDB files in a single PDB file with the separation line \"ENDMDL\". Then load it in \"Open File > PDB File\" in the \"File\" menu and click \"View Sequences & Annotations\" in the \"Window\" menu. Finally select multiple chains in the sequence window and click \"Realign Selection\" in the \"File\" menu.)<br><br>";
+            html += "(Note: To align chains in custom PDB files, you could load them in \"File > Open File > PDB Files (appendable)\" and click \"Analysis > Defined Sets\". Finally select multiple chains in Defined Sets and click \"File > Realign Selection\".)<br><br>";
             html += "</div></div>";
 
             html += me.htmlCls.divStr + "dl_mutation' class='" + dialogClass + "'>";
@@ -49269,6 +62885,18 @@ var icn3d = (function (exports) {
               + me.pre + 'asu_bu_shrink" class="ui-icon ui-icon-minus icn3d-shrink icn3d-link" style="display:none; width:15px;" title="Shrink"></span></div>';
 
             html += me.htmlCls.divStr + "asu_bu' style='display:none;'>";
+            html += 'which can range from a monomer (single protein molecule) to an oligomer of 100+ protein molecules.<br><br>The "<b>asymmetric unit</b>" is the raw 3D structure data resolved by X-ray crystallography, NMR, or Cryo-electron microscopy. The asymmetric unit is equivalent to the biological unit in approximately 60% of structure records. In the remaining 40% of the records, the asymmetric unit represents a portion of the biological unit that can be reconstructed using crystallographic symmetry, or it represents multiple copies of the biological unit.</div>';
+
+            html += "</div>";
+
+            html += me.htmlCls.divStr + "dl_mmdbafid' class='" + dialogClass + "' style='max-width:500px'>";
+            html += "List of MMDB, PDB, or AlphaFold UniProt IDs: " + me.htmlCls.inputTextStr + "id='" + me.pre + "mmdbafid' value='1HHO,4N7N,P69905,P01942' size=30> <br><br>";
+            html += me.htmlCls.buttonStr + "reload_mmdbaf_asym'>Load Asymmetric Unit (All Chains)</button>" + me.htmlCls.buttonStr + "reload_mmdbaf' style='margin-left:30px'>Load Biological Unit</button><br/><br/><br>";
+            html += '<b>Note</b>: The "<b>biological unit</b>" is the <b>biochemically active form of a biomolecule</b>, <div style="width:20px; margin:6px 0 0 20px; display:inline-block;"><span id="'
+            + me.pre + 'asu_bu2_expand" class="ui-icon ui-icon-plus icn3d-expand icn3d-link" style="width:15px;" title="Expand"></span><span id="'
+            + me.pre + 'asu_bu2_shrink" class="ui-icon ui-icon-minus icn3d-shrink icn3d-link" style="display:none; width:15px;" title="Shrink"></span></div>';
+
+            html += me.htmlCls.divStr + "asu_bu2' style='display:none;'>";
             html += 'which can range from a monomer (single protein molecule) to an oligomer of 100+ protein molecules.<br><br>The "<b>asymmetric unit</b>" is the raw 3D structure data resolved by X-ray crystallography, NMR, or Cryo-electron microscopy. The asymmetric unit is equivalent to the biological unit in approximately 60% of structure records. In the remaining 40% of the records, the asymmetric unit represents a portion of the biological unit that can be reconstructed using crystallographic symmetry, or it represents multiple copies of the biological unit.</div>';
 
             html += "</div>";
@@ -49479,7 +63107,7 @@ var icn3d = (function (exports) {
             html += "</select></div>";
 
             html += "</td></tr></table>";
-
+    /*
             if(me.cfg.align !== undefined || me.cfg.chainalign !== undefined) {
                 html += "<div>4. <b>Cross Structure Interactions</b>: <select id='" + me.pre + "crossstrucinter'>";
                 html += me.htmlCls.optionStr + "'1'>Yes</option>";
@@ -49488,8 +63116,9 @@ var icn3d = (function (exports) {
                 html += "<div style='text-indent:1.1em'>" + me.htmlCls.buttonStr + "applyhbonds'>3D Display Interactions</button></div><br>";
             }
             else {
+    */            
                 html += "<div>4. " + me.htmlCls.buttonStr + "applyhbonds'>3D Display Interactions</button></div><br>";
-            }
+    //        }
 
             html += "<div style='text-indent:1.1em'>" + me.htmlCls.buttonStr + "hbondWindow'>Highlight Interactions in Table</button><span style='margin-left:30px; font-wieght:bold'>Sort Interactions on</span>: " + me.htmlCls.buttonStr + "sortSet1'> Set 1</button>" + me.htmlCls.buttonStr + "sortSet2' style='margin-left:20px'>Set 2</button></div><br>";
 
@@ -49519,12 +63148,41 @@ var icn3d = (function (exports) {
 
             html += me.htmlCls.divStr + "dl_realign' class='" + dialogClass + "'>";
 
-            html += me.htmlCls.divNowrapStr + "1. Select sets from two structures below <br>or use your current selection:</div><br>";
+            html += me.htmlCls.divNowrapStr + "1. Select sets below <br>or use your current selection:</div><br>";
             html += "<div style='text-indent:1.1em'><select id='" + me.pre + "atomsCustomRealign' multiple size='5' style='min-width:130px;'>";
             html += "</select></div>";
 
-            html += "<div>2. " + me.htmlCls.buttonStr + "applyRealign'>Realign</button></div><br>";
+            html += "<div>2. " + me.htmlCls.buttonStr + "applyRealign'>Realign by Sequence</button></div><br>";
             html += "</div>";
+
+            html += me.htmlCls.divStr + "dl_realignbystruct' class='" + dialogClass + "'>";
+
+            html += me.htmlCls.divNowrapStr + "1. Select sets below <br>or use your current selection:</div><br>";
+            html += "<div style='text-indent:1.1em'><select id='" + me.pre + "atomsCustomRealignByStruct' multiple size='5' style='min-width:130px;'>";
+            html += "</select></div>";
+
+            html += "<div>2. " + me.htmlCls.buttonStr + "applyRealignByStruct'>Realign by Structure</button></div><br>";
+            html += "</div>";
+
+
+            html += me.htmlCls.divStr + "dl_colorspectrumbysets' class='" + dialogClass + "'>";
+
+            html += me.htmlCls.divNowrapStr + "1. Select sets below:</div><br>";
+            html += "<div style='text-indent:1.1em'><select id='" + me.pre + "atomsCustomColorSpectrum' multiple size='5' style='min-width:130px;'>";
+            html += "</select></div>";
+
+            html += "<div>2. " + me.htmlCls.buttonStr + "applyColorSpectrumBySets'>Spectrum Color for Sets</button></div><br>";
+            html += "</div>";
+
+            html += me.htmlCls.divStr + "dl_colorrainbowbysets' class='" + dialogClass + "'>";
+
+            html += me.htmlCls.divNowrapStr + "1. Select sets below:</div><br>";
+            html += "<div style='text-indent:1.1em'><select id='" + me.pre + "atomsCustomColorRainbow' multiple size='5' style='min-width:130px;'>";
+            html += "</select></div>";
+
+            html += "<div>2. " + me.htmlCls.buttonStr + "applyColorRainbowBySets'>Rainbow Color for Sets</button></div><br>";
+            html += "</div>";
+
 
             html += me.htmlCls.divStr + "dl_allinteraction' style='background-color:white' class='" + dialogClass + "'>";
             html += "</div>";
@@ -49752,6 +63410,25 @@ var icn3d = (function (exports) {
 
             html += me.htmlCls.spanNowrapStr + "2. Color: " + me.htmlCls.inputTextStr + "id='" + me.pre + "distancecolor2' value='" + defaultColor + "' size=4><br/><br/>";
             html += me.htmlCls.spanNowrapStr + "3. " + me.htmlCls.buttonStr + "applydist2'>Display</button></span>";
+            html += "</div>";
+
+            html += me.htmlCls.divStr + "dl_distmanysets' class='" + dialogClass + "'>";
+            html += me.htmlCls.spanNowrapStr + "1. Select sets for pairwise distances</span><br/>";
+            html += "<table border=0 width=400 cellspacing=10><tr><td>";
+
+            html += me.htmlCls.divNowrapStr + "First sets:</div>";
+            html += "<div style='text-indent:1.1em'><select style='max-width:200px' id='" + me.pre + "atomsCustomDistTable2' multiple size='5' style='min-width:130px;'>";
+            html += "</select></div>";
+
+            html += "</td><td>";
+
+            html += me.htmlCls.divNowrapStr + "Second sets:</div>";
+            html += "<div style='text-indent:1.1em'><select style='max-width:200px' id='" + me.pre + "atomsCustomDistTable' multiple size='5' style='min-width:130px;'>";
+            html += "</select></div>";
+
+            html += "</td></tr></table>";
+
+            html += me.htmlCls.spanNowrapStr + "2. " + me.htmlCls.buttonStr + "applydisttable'>Distances in Table</button></span>";
             html += "</div>";
 
             html += me.htmlCls.divStr + "dl_stabilizer_rm' class='" + dialogClass + "'>";
@@ -49986,6 +63663,12 @@ var icn3d = (function (exports) {
             html += "<button style='white-space:nowrap;' id='" + me.pre + "applypropbybfactor'>Apply</button><br/><br/>";
             html += "</div>";
 
+            html += me.htmlCls.divStr + "dl_legend' class='" + dialogClass + "' style='max-width:500px'>";
+            html += "</div>";
+
+            html += me.htmlCls.divStr + "dl_disttable' class='" + dialogClass + "'>";
+            html += "</div>";
+
             html += "</div>";
             html += "<!--/form-->";
 
@@ -50028,9 +63711,56 @@ var icn3d = (function (exports) {
            me.htmlCls.clickMenuCls.setLogCmd('select ' + select + ' | name ' + commandname, true);
         }
 
+        readFile(bAppend, files, index, dataStrAll) { let me = this.icn3dui, ic = me.icn3d;
+            let thisClass = this;
+
+            let file = files[index];
+            let commandName = (bAppend) ? 'append': 'load';
+            
+            let reader = new FileReader();
+            reader.onload = function(e) {
+                //++ic.loadedFileCnt;
+
+                let dataStr = e.target.result; // or = reader.result;
+                //me.htmlCls.clickMenuCls.setLogCmd(commandName + ' pdb file ' + $("#" + me.pre + fileId).val(), false);
+                me.htmlCls.clickMenuCls.setLogCmd(commandName + ' pdb file ' + file.name, false);
+
+                if(!bAppend) {
+                    ic.init();
+                }
+                else {
+                    ic.resetConfig();
+                    //ic.hAtoms = {};
+                    //ic.dAtoms = {};
+                    ic.bResetAnno = true;
+                    ic.bResetSets = true;
+                }
+
+                ic.bInputfile = true;
+                ic.InputfileType = 'pdb';
+                ic.InputfileData = (ic.InputfileData) ? ic.InputfileData + '\nENDMDL\n' + dataStr : dataStr;
+
+                dataStrAll = (index > 0) ? dataStrAll + '\nENDMDL\n' + dataStr : dataStr;
+
+                if(Object.keys(files).length == index + 1) {
+                    if(bAppend) {
+                        ic.hAtoms = {};
+                        ic.dAtoms = {};
+                    }
+                    ic.pdbParserCls.loadPdbData(dataStrAll, undefined, undefined, bAppend);
+                }
+                else {
+                    thisClass.readFile(bAppend, files, index + 1, dataStrAll);
+                }
+            };
+
+            if (typeof file === "object") {
+                reader.readAsText(file);
+            }
+        }
+
         loadPdbFile(bAppend) { let me = this.icn3dui, ic = me.icn3d;
            let fileId = (bAppend) ? 'pdbfile_app' : 'pdbfile';
-           let commandName = (bAppend) ? 'append': 'load';
 
            //me = ic.setIcn3dui(this.id);
            ic.bInitial = true;
@@ -50042,41 +63772,38 @@ var icn3d = (function (exports) {
            else {
                ic.resizeCanvasCls.closeDialogs();
            }
-           let file = $("#" + me.pre + fileId)[0].files[0];
-           if(!file) {
+           let files = $("#" + me.pre + fileId)[0].files;
+           if(!files[0]) {
              alert("Please select a file before clicking 'Load'");
            }
            else {
-             me.htmlCls.setHtmlCls.fileSupport();
-             let reader = new FileReader();
-             reader.onload = function(e) {
-               let dataStr = e.target.result; // or = reader.result;
-               me.htmlCls.clickMenuCls.setLogCmd(commandName + ' pdb file ' + $("#" + me.pre + fileId).val(), false);
-               ic.molTitle = "";
-               //ic.initUI();
-               if(!bAppend) {
-                   ic.init();
-               }
-               else {
-                   ic.resetConfig();
-                   ic.hAtoms = {};
-                   ic.dAtoms = {};
-                   ic.bResetAnno = true;
-                   ic.bResetSets = true;
-               }
+                me.htmlCls.setHtmlCls.fileSupport();
+                ic.molTitle = "";
 
-               ic.bInputfile = true;
-               ic.InputfileData = (ic.InputfileData) ? ic.InputfileData + '\nENDMDL\n' + dataStr : dataStr;
-               ic.InputfileType = 'pdb';
-               ic.pdbParserCls.loadPdbData(dataStr, undefined, undefined, bAppend);
+                //ic.fileCnt = Object.keys(files).length;
+                //ic.loadedFileCnt = 0;
 
-               if(bAppend) {
-                   if(ic.bSetChainsAdvancedMenu) ic.definedSetsCls.showSets();
-                   if(ic.bAnnoShown) ic.showAnnoCls.showAnnotations();
-               }
-             };
-             reader.readAsText(file);
+                ic.dataStrAll = '';
+
+                this.readFile(bAppend, files, 0, '');
+
+                if(bAppend) {
+                    if(ic.bSetChainsAdvancedMenu) ic.definedSetsCls.showSets();
+                    if(ic.bAnnoShown) ic.showAnnoCls.showAnnotations();
+                }
            }
+        }
+
+        saveHtml(id) { let me = this.icn3dui, ic = me.icn3d;
+            let html = '';
+            html += '<link rel="stylesheet" href="https:///structure.ncbi.nlm.nih.gov/icn3d/lib/jquery-ui-1.12.1.min.css">\n';
+            html += '<link rel="stylesheet" href="https:///structure.ncbi.nlm.nih.gov/icn3d/icn3d_full_ui.css">\n';
+            html += $("#" + id).html();
+            let idArray = id.split('_');
+            let idStr =(idArray.length > 2) ? idArray[2] : id;
+            let structureStr = Object.keys(ic.structures)[0];
+            if(Object.keys(ic.structures).length > 1) structureStr += '-' + Object.keys(ic.structures)[1];
+            ic.saveFileCls.saveFile(structureStr + '-' + idStr + '.html', 'html', encodeURIComponent(html));
         }
 
         //Hold all functions related to click events.
@@ -50219,12 +63946,22 @@ var icn3d = (function (exports) {
         //    },
         //    clickRealign: function() {
             me.myEventCls.onIds("#" + me.pre + "mn2_realignresbyres", "click", function(e) { let ic = me.icn3d;
+                if(Object.keys(ic.structures).length < 2) {
+                    alert("At least two structuresare required for alignment...");
+                    return;
+                }
+                
                ic.realignParserCls.realign();
                me.htmlCls.clickMenuCls.setLogCmd("realign", true);
             });
         //    },
         //    clickRealignonseqalign: function() {
             me.myEventCls.onIds("#" + me.pre + "mn2_realignonseqalign", "click", function(e) { let ic = me.icn3d;
+                if(Object.keys(ic.structures).length < 2) {
+                    alert("At least two structuresare required for alignment...");
+                    return;
+                }
+
                 if(ic.bSetChainsAdvancedMenu === undefined || !ic.bSetChainsAdvancedMenu) {
                    let prevHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
                    ic.definedSetsCls.setPredefinedInMenu();
@@ -50235,12 +63972,35 @@ var icn3d = (function (exports) {
                 if($("#" + me.pre + "atomsCustomRealign").length) {
                     $("#" + me.pre + "atomsCustomRealign").html(definedAtomsHtml);
                 }
-                if($("#" + me.pre + "atomsCustomRealign2").length) {
-                    $("#" + me.pre + "atomsCustomRealign2").html(definedAtomsHtml);
-                }
+                //if($("#" + me.pre + "atomsCustomRealign2").length) {
+                //    $("#" + me.pre + "atomsCustomRealign2").html(definedAtomsHtml);
+                //}
                 if(ic.bRender) me.htmlCls.dialogCls.openDlg('dl_realign', 'Please select two sets to realign');
                 $("#" + me.pre + "atomsCustomRealign").resizable();
-                $("#" + me.pre + "atomsCustomRealign2").resizable();
+                //$("#" + me.pre + "atomsCustomRealign2").resizable();
+            });
+
+            me.myEventCls.onIds("#" + me.pre + "mn2_realignonstruct", "click", function(e) { let ic = me.icn3d;
+                if(Object.keys(ic.structures).length < 2) {
+                    alert("At least two structuresare required for alignment...");
+                    return;
+                }
+                if(ic.bSetChainsAdvancedMenu === undefined || !ic.bSetChainsAdvancedMenu) {
+                   let prevHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+                   ic.definedSetsCls.setPredefinedInMenu();
+                   ic.bSetChainsAdvancedMenu = true;
+                   ic.hAtoms = me.hashUtilsCls.cloneHash(prevHAtoms);
+                }
+                let definedAtomsHtml = ic.definedSetsCls.setAtomMenu(['protein']);
+                if($("#" + me.pre + "atomsCustomRealignByStruct").length) {
+                    $("#" + me.pre + "atomsCustomRealignByStruct").html(definedAtomsHtml);
+                }
+                //if($("#" + me.pre + "atomsCustomRealign2").length) {
+                //    $("#" + me.pre + "atomsCustomRealign2").html(definedAtomsHtml);
+                //}
+                if(ic.bRender) me.htmlCls.dialogCls.openDlg('dl_realignbystruct', 'Please select two sets to realign');
+                $("#" + me.pre + "atomsCustomRealignByStruct").resizable();
+                //$("#" + me.pre + "atomsCustomRealign2").resizable();
             });
         //    },
         //    clickApplyRealign: function() {
@@ -50253,11 +64013,12 @@ var icn3d = (function (exports) {
                }
 
                // save the current selection
-               ic.selectionCls.saveSelectionPrep();
-               let name = 'realignSets';
-               ic.selectionCls.saveSelection(name, name);
+               //ic.selectionCls.saveSelectionPrep();
+               //let name = 'realignSetsBySeq';
+               //ic.selectionCls.saveSelection(name, name);
 
                ic.realignParserCls.realignOnSeqAlign();
+
                if(nameArray.length > 0) {
                    me.htmlCls.clickMenuCls.setLogCmd("realign on seq align | " + nameArray, true);
                }
@@ -50265,7 +64026,59 @@ var icn3d = (function (exports) {
                    me.htmlCls.clickMenuCls.setLogCmd("realign on seq align", true);
                }
             });
+
+            me.myEventCls.onIds("#" + me.pre + "applyRealignByStruct", "click", function(e) { let ic = me.icn3d;
+                e.preventDefault();
+                if(!me.cfg.notebook) dialog.dialog( "close" );
+                let nameArray = $("#" + me.pre + "atomsCustomRealignByStruct").val();
+                if(nameArray.length > 0) {
+                    ic.hAtoms = ic.definedSetsCls.getAtomsFromNameArray(nameArray);
+                }
+     
+                // save the current selection
+                //ic.selectionCls.saveSelectionPrep();
+                //let name = 'realignSetsByStruct';
+                //ic.selectionCls.saveSelection(name, name);
+     
+                ic.realignParserCls.realignOnStructAlign();
+                if(nameArray.length > 0) {
+                    me.htmlCls.clickMenuCls.setLogCmd("realign on structure align | " + nameArray, true);
+                }
+                else {
+                    me.htmlCls.clickMenuCls.setLogCmd("realign on structure align", true);
+                }
+             });
         //    },
+
+            me.myEventCls.onIds("#" + me.pre + "applyColorSpectrumBySets", "click", function(e) { let ic = me.icn3d;
+                e.preventDefault();
+                if(!me.cfg.notebook) dialog.dialog( "close" );
+                let nameArray = $("#" + me.pre + "atomsCustomColorSpectrum").val();
+                if(nameArray.length == 0) {
+                    alert("Please select some sets");
+                    return;
+                }
+
+                let bSpectrum = true;
+                ic.setColorCls.setColorBySets(nameArray, bSpectrum);
+
+                me.htmlCls.clickMenuCls.setLogCmd("set color spectrum | " + nameArray, true);
+            });
+
+            me.myEventCls.onIds("#" + me.pre + "applyColorRainbowBySets", "click", function(e) { let ic = me.icn3d;
+                e.preventDefault();
+                if(!me.cfg.notebook) dialog.dialog( "close" );
+                let nameArray = $("#" + me.pre + "atomsCustomColorRainbow").val();
+                if(nameArray.length == 0) {
+                    alert("Please select some sets");
+                    return;
+                }
+
+                let bSpectrum = false;
+                ic.setColorCls.setColorBySets(nameArray, bSpectrum);
+
+                me.htmlCls.clickMenuCls.setLogCmd("set color rainbow | " + nameArray, true);
+            });
 
         // other
         //    clickViewswitch: function() {
@@ -50321,6 +64134,27 @@ var icn3d = (function (exports) {
 
         //    },
         //    clickReload_mmtf: function() {
+            me.myEventCls.onIds("#" + me.pre + "reload_vastplus", "click", function(e) { me.icn3d;
+                e.preventDefault();
+                if(!me.cfg.notebook) dialog.dialog( "close" );
+                me.htmlCls.clickMenuCls.setLogCmd("vast+ search " + $("#" + me.pre + "vastpluspdbid").val(), false);
+                window.open('https://www.ncbi.nlm.nih.gov/Structure/vastplus/vastplus.cgi?uid=' + $("#" + me.pre + "vastpluspdbid").val(), '_blank');
+             });
+
+            me.myEventCls.onIds("#" + me.pre + "reload_vast", "click", function(e) { me.icn3d;
+                e.preventDefault();
+                if(!me.cfg.notebook) dialog.dialog( "close" );
+                me.htmlCls.clickMenuCls.setLogCmd("vast search " + $("#" + me.pre + "vastpdbid").val() + "_" + $("#" + me.pre + "vastchainid").val(), false);
+                window.open('https://www.ncbi.nlm.nih.gov/Structure/vast/vastsrv.cgi?pdbid=' + $("#" + me.pre + "vastpdbid").val() + '&chain=' + $("#" + me.pre + "vastchainid").val(), '_blank');
+             });
+
+            me.myEventCls.onIds("#" + me.pre + "reload_foldseek", "click", function(e) { me.icn3d;
+                e.preventDefault();
+                if(!me.cfg.notebook) dialog.dialog( "close" );
+                me.htmlCls.clickMenuCls.setLogCmd("load chainalignment " + $("#" + me.pre + "foldseekchainids").val(), true);
+                window.open(hostUrl + '?chainalign=' + $("#" + me.pre + "foldseekchainids").val(), '_self');
+             });
+
             me.myEventCls.onIds("#" + me.pre + "reload_mmtf", "click", function(e) { me.icn3d;
                e.preventDefault();
                if(!me.cfg.notebook) dialog.dialog( "close" );
@@ -50436,6 +64270,14 @@ var icn3d = (function (exports) {
                 //window.open( me.htmlCls.baseUrl + 'icn3d/full.html?align=' + alignment + '&showalignseq=1&atype=0', '_blank');
                 window.open(hostUrl + '?align=' + alignment + '&showalignseq=1&atype=0&bu=1', '_blank');
              });
+
+             me.myEventCls.onIds("#" + me.pre + "reload_alignaf", "click", function(e) { me.icn3d;
+                e.preventDefault();
+                if(!me.cfg.notebook) dialog.dialog( "close" );
+                let alignment = $("#" + me.pre + "alignafid1").val() + "_A," + $("#" + me.pre + "alignafid2").val() + "_A";
+                me.htmlCls.clickMenuCls.setLogCmd("load chains " + alignment + " | residues | resdef ", false);
+                window.open(hostUrl + '?chainalign=' + alignment + '&resnum=&resdef=&showalignseq=1', '_blank');
+              });
         //    },
         //    clickReload_chainalign: function() {
             me.myEventCls.onIds("#" + me.pre + "reload_chainalign", "click", function(e) { me.icn3d;
@@ -50443,17 +64285,23 @@ var icn3d = (function (exports) {
                if(!me.cfg.notebook) dialog.dialog( "close" );
         //       let alignment = $("#" + me.pre + "chainalignid1").val() + "," + $("#" + me.pre + "chainalignid2").val();
                let alignment = $("#" + me.pre + "chainalignids").val();
+               let idArray = alignment.split(',');
+               let alignment_final = '';
+               for(let i = 0, il = idArray.length; i < il; ++i) {
+                   alignment_final += (idArray[i].indexOf('_') != -1) ? idArray[i] : idArray[i] + '_A'; // AlphaFold ID
+                   if(i < il - 1) alignment_final += ',';
+               }
                let resalign = $("#" + me.pre + "resalignids").val();
-               let predefinedres = $("#" + me.pre + "predefinedres").val().trim().replace(/\n/g, ' | ');
+               let predefinedres = $("#" + me.pre + "predefinedres").val().trim().replace(/\n/g, '; ');
 
-               if(predefinedres && alignment.split(',').length != predefinedres.split(' | ').length) {
+               if(predefinedres && alignment_final.split(',').length - 1 != predefinedres.split('; ').length) {
                    alert("Please make sure the number of chains and the lines of predefined residues are the same...");
                    return;
                }
 
-               me.htmlCls.clickMenuCls.setLogCmd("load chains " + alignment + " | residues " + resalign + " | resdef " + predefinedres, false);
+               me.htmlCls.clickMenuCls.setLogCmd("load chains " + alignment_final + " | residues " + resalign + " | resdef " + predefinedres, false);
                //window.open(me.htmlCls.baseUrl + 'icn3d/full.html?chainalign=' + alignment + '&resnum=' + resalign + '&resdef=' + predefinedres + '&showalignseq=1', '_blank');
-               window.open(hostUrl + '?chainalign=' + alignment + '&resnum=' + resalign + '&resdef=' + predefinedres + '&showalignseq=1', '_blank');
+               window.open(hostUrl + '?chainalign=' + alignment_final + '&resnum=' + resalign + '&resdef=' + predefinedres + '&showalignseq=1', '_blank');
             });
 
             me.myEventCls.onIds("#" + me.pre + "reload_chainalign_asym", "click", function(e) { me.icn3d;
@@ -50461,16 +64309,22 @@ var icn3d = (function (exports) {
                if(!me.cfg.notebook) dialog.dialog( "close" );
         //       let alignment = $("#" + me.pre + "chainalignid1").val() + "," + $("#" + me.pre + "chainalignid2").val();
                let alignment = $("#" + me.pre + "chainalignids").val();
+               let idArray = alignment.split(',');
+               let alignment_final = '';
+               for(let i = 0, il = idArray.length; i < il; ++i) {
+                   alignment_final += (idArray[i].indexOf('_') != -1) ? idArray[i] : idArray[i] + '_A'; // AlphaFold ID
+                   if(i < il - 1) alignment_final += ',';
+               }
                let resalign = $("#" + me.pre + "resalignids").val();
-               let predefinedres = $("#" + me.pre + "predefinedres").val().trim().replace(/\n/g, ' | ');
-               if(predefinedres && alignment.split(',').length != predefinedres.split(' | ').length) {
+               let predefinedres = $("#" + me.pre + "predefinedres").val().trim().replace(/\n/g, '; ');
+               if(predefinedres && alignment_final.split(',').length - 1 != predefinedres.split('; ').length) {
                    alert("Please make sure the number of chains and the lines of predefined residues are the same...");
                    return;
                }
 
-               me.htmlCls.clickMenuCls.setLogCmd("load chains " + alignment + " on asymmetric unit | residues " + resalign + " | resdef " + predefinedres, false);
+               me.htmlCls.clickMenuCls.setLogCmd("load chains " + alignment_final + " on asymmetric unit | residues " + resalign + " | resdef " + predefinedres, false);
                //window.open(me.htmlCls.baseUrl + 'icn3d/full.html?chainalign=' + alignment + '&resnum=' + resalign + '&resdef=' + predefinedres + '&showalignseq=1&bu=0', '_blank');
-               window.open(hostUrl + '?chainalign=' + alignment + '&resnum=' + resalign + '&resdef=' + predefinedres + '&showalignseq=1&bu=0', '_blank');
+               window.open(hostUrl + '?chainalign=' + alignment_final + '&resnum=' + resalign + '&resdef=' + predefinedres + '&showalignseq=1&bu=0', '_blank');
             });
 
             me.myEventCls.onIds("#" + me.pre + "reload_mutation_3d", "click", function(e) { me.icn3d;
@@ -50558,7 +64412,21 @@ var icn3d = (function (exports) {
                 //if(!me.cfg.notebook) dialog.dialog( "close" );
                 me.htmlCls.clickMenuCls.setLogCmd("load mmdb0 " + $("#" + me.pre + "mmdbid").val(), false);
                 window.open(hostUrl + '?mmdbid=' + $("#" + me.pre + "mmdbid").val() + '&bu=0', '_blank');
-             });
+            });
+
+             me.myEventCls.onIds("#" + me.pre + "reload_mmdbaf", "click", function(e) { me.icn3d;
+                e.preventDefault();
+                //if(!me.cfg.notebook) dialog.dialog( "close" );
+                me.htmlCls.clickMenuCls.setLogCmd("load mmdbaf1 " + $("#" + me.pre + "mmdbafid").val(), false);
+                window.open(hostUrl + '?mmdbafid=' + $("#" + me.pre + "mmdbafid").val() + '&bu=1', '_blank');
+            });
+     
+             me.myEventCls.onIds("#" + me.pre + "reload_mmdbaf_asym", "click", function(e) { me.icn3d;
+                 e.preventDefault();
+                 //if(!me.cfg.notebook) dialog.dialog( "close" );
+                 me.htmlCls.clickMenuCls.setLogCmd("load mmdbaf0 " + $("#" + me.pre + "mmdbafid").val(), false);
+                 window.open(hostUrl + '?mmdbafid=' + $("#" + me.pre + "mmdbafid").val() + '&bu=0', '_blank');
+            });
 
             me.myEventCls.onIds("#" + me.pre + "mmdbid", "keyup", function(e) { me.icn3d;
                if (e.keyCode === 13) {
@@ -51064,7 +64932,7 @@ var icn3d = (function (exports) {
                       dataType: 'jsonp',
                       cache: true,
                       tryCount : 0,
-                      retryLimit : 1,
+                      retryLimit : 0, //1
                       beforeSend: function() {
                           ic.ParserUtilsCls.showLoading();
                       },
@@ -51622,6 +65490,37 @@ var icn3d = (function (exports) {
                me.htmlCls.clickMenuCls.setLogCmd("dist | " + nameArray2 + " " + nameArray, true);
             });
 
+            $(document).on("click", ".icn3d-distance", function(e) { let ic = me.icn3d;
+                e.preventDefault();
+                ic.bMeasureDistance = false;
+
+                ic.distPnts = [];
+                ic.labels['distance'] = [];
+                ic.lines['distance'] = [];
+
+                let sets = $(this).attr('sets').split('|');
+     
+                let nameArray = [sets[0]];
+                let nameArray2 = [sets[1]];
+     
+                ic.analysisCls.measureDistTwoSets(nameArray, nameArray2);
+                me.htmlCls.clickMenuCls.setLogCmd("dist | " + nameArray2 + " " + nameArray, true);
+             });
+
+            me.myEventCls.onIds("#" + me.pre + "applydisttable", "click", function(e) { let ic = me.icn3d;
+                e.preventDefault();
+                if(!me.cfg.notebook) dialog.dialog( "close" );
+                ic.bMeasureDistance = false;
+     
+                let nameArray = $("#" + me.pre + "atomsCustomDistTable").val();
+                let nameArray2 = $("#" + me.pre + "atomsCustomDistTable2").val();
+     
+                ic.analysisCls.measureDistManySets(nameArray, nameArray2);
+                me.htmlCls.dialogCls.openDlg('dl_disttable', 'Distance among the sets');
+
+                me.htmlCls.clickMenuCls.setLogCmd("disttable | " + nameArray2 + " " + nameArray, true);
+            });
+
         //    clickApply_thickness: function() {
             me.myEventCls.onIds("#" + me.pre + "apply_thickness_3dprint", "click", function(e) { me.icn3d;
                 e.preventDefault();
@@ -51697,6 +65596,9 @@ var icn3d = (function (exports) {
                       let menuStr = ic.applyCommandCls.getMenuFromCmd(cmdStr);
                       $("#" + me.pre + "replay_cmd").html('Cmd: ' + cmdStr);
                       $("#" + me.pre + "replay_menu").html('Menu: ' + menuStr);
+
+                      me.htmlCls.clickMenuCls.setLogCmd(cmdStrOri, true);
+
                       ic.drawCls.draw();
                  }
             });
@@ -51740,18 +65642,12 @@ var icn3d = (function (exports) {
             });
         //    },
         //    clickSaveDialog: function() {
-            $(document).on("click", ".icn3d-saveicon", function(e) { let ic = me.icn3d;
+            $(document).on("click", ".icn3d-saveicon", function(e) { me.icn3d;
                e.stopImmediatePropagation();
                let id = $(this).attr('pid');
-               let html = '';
-               html += '<link rel="stylesheet" href="https:///structure.ncbi.nlm.nih.gov/icn3d/lib/jquery-ui-1.12.1.min.css">\n';
-               html += '<link rel="stylesheet" href="https:///structure.ncbi.nlm.nih.gov/icn3d/icn3d_full_ui.css">\n';
-               html += $("#" + id).html();
-               let idArray = id.split('_');
-               let idStr =(idArray.length > 2) ? idArray[2] : id;
-               let structureStr = Object.keys(ic.structures)[0];
-               if(Object.keys(ic.structures).length > 1) structureStr += '-' + Object.keys(ic.structures)[1];
-               ic.saveFileCls.saveFile(structureStr + '-' + idStr + '.html', 'html', encodeURIComponent(html));
+
+               thisClass.saveHtml(id);
+               me.htmlCls.clickMenuCls.setLogCmd("save html " + id, true);
             });
         //    },
         //    clickHideDialog: function() {
@@ -52121,7 +66017,22 @@ var icn3d = (function (exports) {
                 let structure = oriChainid.substr(0, dashPos);
                 let chain = oriChainid.substr(dashPos + 1);
 
-                let startResi = (ic.alnChainsSeq[i][0] !== undefined) ? ic.alnChainsSeq[i][0].resi : '';
+                //let startResi = (ic.alnChainsSeq[i][0] !== undefined) ? ic.alnChainsSeq[i][0].resi : '';
+                let startResi, endResi;
+                for (let k = 0, kl = seqLength; k < kl; ++k) {
+                    if(ic.alnChainsSeq[i][k].resn != '-') {
+                        startResi = ic.alnChainsSeq[i][k].resi;
+                        break;
+                    }
+                }
+
+                for (let k = seqLength - 1; k >= 0; --k) {
+                    if(ic.alnChainsSeq[i][k].resn != '-') {
+                        endResi = ic.alnChainsSeq[i][k].resi;
+                        break;
+                    }
+                }
+
                 seqHtml += "<span class='icn3d-residueNum' title='starting residue number'>" + startResi + "</span>";
                 bHighlightChain = (alignChainArray !== undefined && chainHash.hasOwnProperty(oriChainid)) ? true : false;
 
@@ -52179,16 +66090,20 @@ var icn3d = (function (exports) {
                     }
 
                 }
-                let endResi = (ic.alnChainsSeq[i][seqLength - 1] !== undefined) ? ic.alnChainsSeq[i][seqLength - 1].resi : '';
+                //let endResi = (ic.alnChainsSeq[i][seqLength - 1] !== undefined) ? ic.alnChainsSeq[i][seqLength - 1].resi : '';
                 seqHtml += "<span class='icn3d-residueNum' title='ending residue number'>" + endResi + "</span>";
 
+                let n = alignChainArray.length;
+
                 // the first chain stores all annotations
+                // secondary: n, labels: 2, title: n, empty line: 1
                 let annoLength = (ic.alnChainsAnno[i] !== undefined) ? ic.alnChainsAnno[i].length : 0;
 
                 for (let j = 0, jl = annoLength; j < jl; ++j) {
                     resiHtmlArray[j] = "";
 
-                    let chainid = (j == 0 && annoLength >= 7) ? ic.alnChainsAnTtl[i][4][0] : oriChainid; // bottom secondary, j == 0: chain2,  next secondary, j == 1: chain1,
+                    //let chainid = (j == 0 && annoLength >= 7) ? ic.alnChainsAnTtl[i][4][0] : oriChainid; // bottom secondary, j == 0: chain2,  next secondary, j == 1: chain1,
+                    let chainid = (j < n) ?  alignChainArray[n - 1 - j] : oriChainid; // bottom secondary, j == 0: chain2,  next secondary, j == 1: chain1,
 
                     resiHtmlArray[j] += "<span class='icn3d-residueNum'></span>"; // a spot corresponding to the starting and ending residue number
                     for (let k = 0, kl = ic.alnChainsAnno[i][j].length; k < kl; ++k) {
@@ -52204,7 +66119,6 @@ var icn3d = (function (exports) {
                                 }
                             } else if (text == 'E') {
                                 if (ic.alnChainsSeq[chainid][k] !== undefined) {
-                                    //var resiId = ic.alnChainsSeq[i][k].resi;
                                     let resiId = ic.alnChainsSeq[chainid][k].resi;
                                     let resIdFull = chainid + "_" + resiId;
 
@@ -52217,12 +66131,15 @@ var icn3d = (function (exports) {
                                             resiHtmlArray[j] += '<span class="icn3d-sheet">&nbsp;</span>';
                                         }
                                     }
+                                    else {
+                                        resiHtmlArray[j] += '<span class="icn3d-sheet">&nbsp;</span>';
+                                    }
                                 }
                             } else if (text == 'c') {
                                 resiHtmlArray[j] += '<span class="icn3d-coil">&nbsp;</span>';
                             } else if (text == 'o') {
                                 resiHtmlArray[j] += '<span class="icn3d-other">&nbsp;</span>';
-                            } else {
+                            } else {                          
                                 resiHtmlArray[j] += "<span></span>";
                             }
                         } else {
@@ -53266,41 +67183,72 @@ var icn3d = (function (exports) {
         // change the display atom when alternating
         //Show structures one by one.
         alternateStructures() { let ic = this.icn3d, me = ic.icn3dui;
-            let hAtomsCount = Object.keys(ic.hAtoms).length;
+            // default ic.ALTERNATE_STRUCTURE = -1
+            if(ic.ALTERNATE_STRUCTURE == -1) {
+                ic.viewSelectionAtoms = me.hashUtilsCls.cloneHash(ic.dAtoms);
+            }
+
+            let viewSelectionAtomsCount = Object.keys(ic.viewSelectionAtoms).length;
             let allAtomsCount = Object.keys(ic.atoms).length;
 
             ic.dAtoms = {};
 
+            // alternate all displayed structures
+            let moleculeArray = Object.keys(ic.structures);
             // only alternate selected structures
-            //let moleculeArray = Object.keys(ic.structures);
-            let structureHash = {};
-            for(let i in ic.hAtoms) {
-                let structure = ic.atoms[i].structure;
-                structureHash[structure] = 1;
-            }
-            let moleculeArray = Object.keys(structureHash);
+            // let structureHash = {};
+            // for(let i in ic.hAtoms) {
+            //     let structure = ic.atoms[i].structure;
+            //     structureHash[structure] = 1;
+            // }
+            // let moleculeArray = Object.keys(structureHash);
 
             for(let i = 0, il = moleculeArray.length; i < il; ++i) {
                 let structure = moleculeArray[i];
-                if(i > ic.ALTERNATE_STRUCTURE || (ic.ALTERNATE_STRUCTURE === il - 1 && i === 0) ) {
+                //if(i > ic.ALTERNATE_STRUCTURE || (ic.ALTERNATE_STRUCTURE === il - 1 && i === 0) ) {
+                let bChoose;
+                if(ic.bShift) {
+                    // default ic.ALTERNATE_STRUCTURE = -1
+                    if(ic.ALTERNATE_STRUCTURE < 0) ic.ALTERNATE_STRUCTURE = 1;
+
+                    bChoose = (i == ic.ALTERNATE_STRUCTURE % il - 1) 
+                      || (ic.ALTERNATE_STRUCTURE % il === 0 && i === il - 1);
+                } 
+                else {
+                    bChoose = (i == ic.ALTERNATE_STRUCTURE % il + 1) 
+                      || (ic.ALTERNATE_STRUCTURE % il === il - 1 && i === 0);
+                }
+
+                if(bChoose) {
                     for(let k in ic.structures[structure]) {
                         let chain = ic.structures[structure][k];
                         ic.dAtoms = me.hashUtilsCls.unionHash(ic.dAtoms, ic.chains[chain]);
                     }
 
-                    ic.ALTERNATE_STRUCTURE = i;
+                    //ic.ALTERNATE_STRUCTURE = i;
+                    if(ic.bShift) {
+                        --ic.ALTERNATE_STRUCTURE;
+                    }
+                    else {
+                        ++ic.ALTERNATE_STRUCTURE;
+                    }
+
+                    if(ic.ALTERNATE_STRUCTURE < 0) ic.ALTERNATE_STRUCTURE += il;
 
                     $("#" + ic.pre + "title").html(structure);
 
                     break;
                 }
-            }
+            } 
 
-            if(hAtomsCount < allAtomsCount) {
-                ic.dAtoms = me.hashUtilsCls.intHash(ic.dAtoms, ic.hAtoms);
-
+            if(viewSelectionAtomsCount < allAtomsCount) {
+                let tmpAtoms = me.hashUtilsCls.intHash(ic.dAtoms, ic.viewSelectionAtoms);
+                if(Object.keys(tmpAtoms).length > 0) {
+                    ic.dAtoms = me.hashUtilsCls.cloneHash(tmpAtoms);
+                }
+                
                 ic.bShowHighlight = false;
-                ic.opts['rotationcenter'] = 'highlight center';
+    //            ic.opts['rotationcenter'] = 'highlight center';
             }
 
             // also alternating the surfaces
@@ -53844,7 +67792,7 @@ var icn3d = (function (exports) {
                 dataType: dataType,
                 cache: true,
                 tryCount : 0,
-                retryLimit : 1,
+                retryLimit : 0, //1
                 success: function(data) {
                     thisClass.processAfErrorMap(data, bFull);
                 },
@@ -53997,7 +67945,7 @@ var icn3d = (function (exports) {
 
             let graphStr = '{\n';
 
-            let struc1 = (ic.structures.length > 0) ? ic.structures[0] : 'stru';
+            let struc1 = (ic.structures.length > 0) ? ic.structures[0] : 'STRU';
             let len1 = nodeArray1.length,
                 len2 = nodeArray2.length;
             let factor = 1;
@@ -55830,7 +69778,7 @@ var icn3d = (function (exports) {
 
                 else if(e.keyCode === 65 ) { // A, alternate
                    if(Object.keys(ic.structures).length > 1) {
-                       ic.alternateCls.alternateWrapper();
+                     ic.alternateCls.alternateWrapper();
                    }
                 }
 
@@ -56032,20 +69980,41 @@ var icn3d = (function (exports) {
 
         this.bUsePdbNum = true;
 
+        let bWebGL, bWebGL2, bVR;
         if(!this.icn3dui.bNode) {
             let canvas = document.createElement( 'canvas' );
-            let bWebGL = !! ( window.WebGLRenderingContext && ( canvas.getContext( 'webgl' ) || canvas.getContext( 'experimental-webgl' ) ) );
+            bWebGL = !! ( window.WebGLRenderingContext && ( canvas.getContext( 'webgl' ) || canvas.getContext( 'experimental-webgl' ) ) );
+            canvas.remove();
+
+            canvas = document.createElement( 'canvas' );
+            bWebGL2 = !! ( window.WebGLRenderingContext && ( canvas.getContext( 'webgl2' ) ) );
+            canvas.remove();
+
+            bVR = ( 'xr' in navigator ); // possibly support VR
 
             if(bWebGL){
                 //https://discourse.threejs.org/t/three-js-r128-ext-frag-depth-and-angle-instanced-arrays-extensions-are-not-supported/26037
-                //this.renderer = new THREE.WebGLRenderer({
-                this.renderer = new THREE.WebGL1Renderer({
-                    canvas: this.oriContainer.get(0), //this.container.get(0),
-                    antialias: true,
-                    preserveDrawingBuffer: true,
-                    sortObjects: false,
-                    alpha: true
-                });
+                //this.renderer = new THREE.WebGL1Renderer({
+                if ( bWebGL2 && bVR) { 
+                    this.renderer = new THREE.WebGLRenderer({
+                        canvas: this.oriContainer.get(0), //this.container.get(0),
+                        antialias: true,
+                        preserveDrawingBuffer: true,
+                        sortObjects: false,
+                        alpha: true
+                    });
+                    // Enable VR
+                    this.renderer.xr.enabled = true;
+                }
+                else {
+                    this.renderer = new THREE.WebGL1Renderer({
+                        canvas: this.oriContainer.get(0), //this.container.get(0),
+                        antialias: true,
+                        preserveDrawingBuffer: true,
+                        sortObjects: false,
+                        alpha: true
+                    });
+                }
 
                 this.overdraw = 0;
             }
@@ -56102,22 +70071,39 @@ var icn3d = (function (exports) {
         this.chainMissingResidueArray = {};
         this._zoomFactor = 1.0;
 
-        if(!this.icn3dui.bNode) {
-            this.bExtFragDepth = this.renderer.extensions.get( "EXT_frag_depth" );
-            if(!this.bExtFragDepth) {
-                this.bImpo = false;
-                console.log('EXT_frag_depth is NOT supported. All spheres and cylinders are drawn using geometry.');
-            }
-            else {
-                console.log('EXT_frag_depth is supported. All spheres and cylinders are drawn using shaders.');
-            }
+        this.transparentRenderOrder = false; // false: regular transparency; true: expensive renderOrder for each face
 
-            this.bInstanced = this.renderer.extensions.get( "ANGLE_instanced_arrays" );
-            if(!this.bInstanced) {
-                console.log('ANGLE_instanced_arrays is NOT supported. Assembly is drawn by making copies of the asymmetric unit.');
+        if(!this.icn3dui.bNode) {
+            if ( bWebGL2 && bVR) { 
+                // if(bVR) { // Meta browser (VR) has problems with imposter. The positions are wrong.
+                //     this.bExtFragDepth = false;
+                //     this.bImpo = false; 
+                // }
+                // else { // WebGL2 supports EXT_frag_depth and ANGLE_instanced_arrays
+                    this.bExtFragDepth = true;
+                    this.bImpo = true; 
+                    //console.log('WebGL2 is supported. Thus EXT_frag_depth and ANGLE_instanced_arrays are supported. All spheres and cylinders are drawn using shaders. Assembly is drawn with one copy of the asymmetric unit using hardware instancing.');
+                // }
+
+                this.bInstanced = true;
             }
             else {
-                console.log('ANGLE_instanced_arrays is supported. Assembly is drawn with one copy of the asymmetric unit using hardware instancing.');
+                this.bExtFragDepth = this.renderer.extensions.get( "EXT_frag_depth" );
+                if(!this.bExtFragDepth) {
+                    this.bImpo = false;
+                    console.log('EXT_frag_depth is NOT supported. All spheres and cylinders are drawn using geometry.');
+                }
+                else {
+                    console.log('EXT_frag_depth is supported. All spheres and cylinders are drawn using shaders.');
+                }
+
+                this.bInstanced = this.renderer.extensions.get( "ANGLE_instanced_arrays" );
+                if(!this.bInstanced) {
+                    console.log('ANGLE_instanced_arrays is NOT supported. Assembly is drawn by making copies of the asymmetric unit.');
+                }
+                else {
+                    console.log('ANGLE_instanced_arrays is supported. Assembly is drawn with one copy of the asymmetric unit using hardware instancing.');
+                }
             }
         }
 
@@ -56232,9 +70218,11 @@ var icn3d = (function (exports) {
         this.optsOri['background']         = 'black';              //transparent, black, grey, white
         this.optsOri['color']              = 'chain';              //spectrum, secondary structure, charge, hydrophobic, conserved, chain, residue, atom, b factor, red, green, blue, magenta, yellow, cyan, white, grey, custom
         this.optsOri['proteins']           = 'ribbon';             //ribbon, strand, cylinder and plate, schematic, c alpha trace, backbone, b factor tube, lines, stick, ball and stick, sphere, nothing
-        this.optsOri['sidec']              = 'nothing';            //lines, stick, ball and stick, sphere, nothing
+        this.optsOri['sidec']              = 'nothing';            //lines2, stick2, ball and stick2, sphere2, nothing
         this.optsOri['nucleotides']        = 'nucleotide cartoon'; //nucleotide cartoon, o3 trace, backbone, schematic, lines, stick,
                                                                   // nucleotides ball and stick, sphere, nothing
+        this.optsOri['ntbase']             = 'nothing';            //lines2, stick2, ball and stick2, sphere2, nothing
+
         this.optsOri['surface']            = 'nothing';            //Van der Waals surface, molecular surface, solvent accessible surface, nothing
         this.optsOri['opacity']            = '1.0';                //1.0, 0.9, 0.8, 0.7, 0.6, 0.5
         this.optsOri['wireframe']          = 'no';                 //yes, no
@@ -56324,9 +70312,9 @@ var icn3d = (function (exports) {
         this.curveStripArrowCls = new CurveStripArrow(this);
         this.curveCls = new Curve(this);
         this.cylinderCls = new Cylinder(this);
-        this.lineCls = new Line(this);
+        this.lineCls = new Line$1(this);
         this.reprSubCls = new ReprSub(this);
-        this.sphereCls = new Sphere(this);
+        this.sphereCls = new Sphere$1(this);
         this.stickCls = new Stick(this);
         this.strandCls = new Strand(this);
         this.stripCls = new Strip(this);
@@ -56377,6 +70365,7 @@ var icn3d = (function (exports) {
         this.annoSnpClinVarCls = new AnnoSnpClinVar(this);
         this.annoSsbondCls = new AnnoSsbond(this);
         this.annoTransMemCls = new AnnoTransMem(this);
+        this.domain3dCls = new Domain3d(this);
 
         this.addTrackCls = new AddTrack(this);
         this.annotationCls = new Annotation(this);
@@ -56435,6 +70424,8 @@ var icn3d = (function (exports) {
         this.controlCls = new Control(this);
         this.pickingCls = new Picking(this);
 
+        this.VRButtonCls = new VRButton(this);
+
         // set this.matShader
         //This defines the highlight color using the outline method. It can be defined using the function setOutlineColor().
         this.matShader = this.setColorCls.setOutlineColor('yellow');
@@ -56452,7 +70443,7 @@ var icn3d = (function (exports) {
         //this.inputid = {"idtype": undefined, "id":undefined}; // support pdbid, mmdbid
 
         this.biomtMatrices = [];
-        this.bAssembly = false; //true;
+        this.bAssembly = true; //false; 
 
         this.bDrawn = false;
         this.bSecondaryStructure = false;
@@ -56513,6 +70504,7 @@ var icn3d = (function (exports) {
         this.hAtoms = {};
         this.proteins = {};
         this.sidec = {};
+        this.ntbase = {};
         this.nucleotides = {};
         this.nucleotidesO3 = {};
 
@@ -56590,7 +70582,7 @@ var icn3d = (function (exports) {
         ic.lines = {};    // hash of name -> a list of solid or dashed lines. Each line contains 'position1', 'position2', 'color', and a boolean of 'dashed'
                             // line name could be custom, hbond, ssbond, distance
 
-        ic.bAssembly = false; //true;
+        ic.bAssembly = true; //false;
     };
 
     iCn3D.prototype.resetConfig = function () { let ic = this, me = ic.icn3dui;
@@ -56614,6 +70606,8 @@ var icn3d = (function (exports) {
         }
 
         if(me.cfg.blast_rep_id !== undefined) this.opts['color'] = 'conservation';
+        if(me.cfg.mmdbafid !== undefined) this.opts['color'] = 'structure';
+
         if(me.cfg.options !== undefined) $.extend(this.opts, me.cfg.options);
     };
 
@@ -56629,7 +70623,7 @@ var icn3d = (function (exports) {
         //even when multiple iCn3D viewers are shown together.
         this.pre = this.cfg.divid + "_";
 
-        this.REVISION = '3.8.2';
+        this.REVISION = '3.12.2';
 
         // In nodejs, iCn3D defines "window = {navigator: {}}"
         this.bNode = (Object.keys(window).length < 2) ? true : false;
@@ -56672,7 +70666,7 @@ var icn3d = (function (exports) {
     }
 
     // show3DStructure is the main function to show 3D structure
-    iCn3DUI.prototype.show3DStructure = function() { let me = this;
+    iCn3DUI.prototype.show3DStructure = function(pdbStr) { let me = this;
       let thisClass = this;
       me.deferred = $.Deferred(function() {
         if(me.cfg.menuicon) {
@@ -56787,14 +70781,56 @@ var icn3d = (function (exports) {
             let id = loadCommand.substr(loadCommand.lastIndexOf(' ') + 1);
             // reload only if viewing the same structure
             if(id === me.cfg.mmtfid || id === me.cfg.pdbid || id === me.cfg.opmid || id === me.cfg.mmdbid || id === me.cfg.gi  || id === me.cfg.blast_rep_id
-              || id === me.cfg.cid || id === me.cfg.mmcifid || id === me.cfg.align || id === me.cfg.chainalign) {
+              || id === me.cfg.cid || id === me.cfg.mmcifid || id === me.cfg.align || id === me.cfg.chainalign || id === me.cfg.mmdbafid) {
                 ic.loadScriptCls.loadScript(ic.commandsBeforeCrash, true);
                 return;
             }
         }
         ic.molTitle = '';
         ic.loadCmd;
-        if(me.cfg.url !== undefined) {
+
+        if(pdbStr) { // input pdbStr
+            ic.init();
+            ic.pdbParserCls.loadPdbData(pdbStr);
+
+            if(me.cfg.resdef !== undefined && me.cfg.chains !== undefined) {
+                let structureArray = Object.keys(ic.structures);
+                let chainArray = me.cfg.chains.split(' | ');
+                let chainidArray = [];
+                if(structureArray.length == chainArray.length) {
+                    for(let i = 0, il = structureArray.length; i  < il; ++i) {
+                        chainidArray.push(structureArray[i] + '_' + chainArray[i]);
+                    }
+                    
+                    let bRealign = true, bPredefined = true;
+                    ic.realignParserCls.realignChainOnSeqAlign(undefined, chainidArray, bRealign, bPredefined);
+                }
+            }
+            else if(me.cfg.resdef !== undefined && me.cfg.matchedchains !== undefined) {
+                let stru_t = Object.keys(ic.structures)[0];
+                let chain_t = stru_t + '_' + me.cfg.masterchain;
+                let chainidArray = me.cfg.matchedchains.split(',');
+                let mmdbafid = '';
+                for(let i = 0, il = chainidArray.length; i < il; ++i) {
+                    if(i > 0) mmdbafid += ',';
+                    mmdbafid += chainidArray[i].substr(0, chainidArray[i].indexOf('_'));
+                }
+
+                // load multiple PDBs
+                ic.bNCBI = true;
+                ic.bMmdbafid = true;
+                
+                ic.loadCmd = 'load mmdbaf0 ' + mmdbafid;
+                me.htmlCls.clickMenuCls.setLogCmd(ic.loadCmd, true);
+
+                let bQuery = true;
+                ic.chainalignParserCls.downloadMmdbAf(mmdbafid, bQuery);
+
+                // realign
+                ic.chainidArray = [chain_t].concat(chainidArray);
+            }
+        }
+        else if(me.cfg.url !== undefined) {
             ic.bInputUrlfile = true;
 
             let type_url = me.cfg.url.split('|');
@@ -56876,7 +70912,7 @@ var icn3d = (function (exports) {
                   url: url,
                   dataType: 'json',
                   tryCount : 0,
-                  retryLimit : 1,
+                  retryLimit : 0, //1
                   success: function(data) {
                     for(let q = 0, ql = data.BlastOutput2.length; q < ql; ++q) {
                       if(data.BlastOutput2[q].report.results.search.query_id != me.cfg.query_id) continue;
@@ -56932,7 +70968,7 @@ var icn3d = (function (exports) {
               url: url,
               dataType: 'jsonp',
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               success: function(data) {
                   if(data.InformationList !== undefined && data.InformationList.Information !== undefined) ic.molTitle = data.InformationList.Information[0].Title;
               },
@@ -56978,6 +71014,23 @@ var icn3d = (function (exports) {
             ic.loadCmd = 'load chainalignment ' + me.cfg.chainalign + ' | resnum ' + me.cfg.resnum + ' | resdef ' + me.cfg.resdef + ' | parameters ' + me.cfg.inpara;
             me.htmlCls.clickMenuCls.setLogCmd(ic.loadCmd, true);
             ic.chainalignParserCls.downloadChainalignment(me.cfg.chainalign, me.cfg.resnum, me.cfg.resdef);
+        }
+        else if(me.cfg.mmdbafid !== undefined) {
+            ic.bNCBI = true;
+
+            ic.bMmdbafid = true;
+            ic.inputid = me.cfg.mmdbafid;
+            if(me.cfg.bu == 1) {
+                ic.loadCmd = 'load mmdbaf1 ' + me.cfg.mmdbafid + ' | parameters ' + me.cfg.inpara;
+            }
+            else {
+                ic.loadCmd = 'load mmdbaf0 ' + me.cfg.mmdbafid + ' | parameters ' + me.cfg.inpara;
+            }
+            me.htmlCls.clickMenuCls.setLogCmd(ic.loadCmd, true);
+
+            $.when(ic.chainalignParserCls.downloadMmdbAf(me.cfg.mmdbafid)).then(function() {
+                ic.loadScriptCls.loadScript(me.cfg.command);
+            });
         }
         else if(me.cfg.command !== undefined && me.cfg.command !== '') {
             if(me.cfg.command.indexOf('url=') !== -1) ic.bInputUrlfile = true;
@@ -57144,6 +71197,7 @@ var icn3d = (function (exports) {
     exports.DensityCifParser = DensityCifParser;
     exports.Diagram2d = Diagram2d;
     exports.Dialog = Dialog;
+    exports.Domain3d = Domain3d;
     exports.Draw = Draw;
     exports.DrawGraph = DrawGraph;
     exports.Dsn6Parser = Dsn6Parser;
@@ -57164,7 +71218,7 @@ var icn3d = (function (exports) {
     exports.Impostor = Impostor;
     exports.Instancing = Instancing;
     exports.Label = Label;
-    exports.Line = Line;
+    exports.Line = Line$1;
     exports.LineGraph = LineGraph;
     exports.LoadAtomData = LoadAtomData;
     exports.LoadPDB = LoadPDB;
@@ -57207,7 +71261,7 @@ var icn3d = (function (exports) {
     exports.ShowAnno = ShowAnno;
     exports.ShowInter = ShowInter;
     exports.ShowSeq = ShowSeq;
-    exports.Sphere = Sphere;
+    exports.Sphere = Sphere$1;
     exports.Stick = Stick;
     exports.Strand = Strand;
     exports.Strip = Strip;
@@ -57218,6 +71272,7 @@ var icn3d = (function (exports) {
     exports.Transform = Transform;
     exports.Tube = Tube;
     exports.UtilsCls = UtilsCls;
+    exports.VRButton = VRButton;
     exports.ViewInterPairs = ViewInterPairs;
     exports.XyzParser = XyzParser;
     exports.iCn3D = iCn3D;

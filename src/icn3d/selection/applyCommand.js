@@ -483,7 +483,7 @@ class ApplyCommand {
         //ic.drawCls.draw();
       }
       else if(command == 'disulfide bonds') {
-        ic.annoSsbondCls.showSsbonds();
+        ic.showInterCls.showSsbonds();
       }
       else if(command == 'cross linkage') {
         ic.showInterCls.showClbonds();
@@ -636,6 +636,16 @@ class ApplyCommand {
         //ic.hlUpdateCls.updateHlAll();
       }
       else if(command.indexOf('set surface opacity') == 0) {
+        ic.transparentRenderOrder = false;
+
+        let  value = command.substr(command.lastIndexOf(' ') + 1);
+        ic.opts['opacity'] = parseFloat(value);
+        ic.applyMapCls.applySurfaceOptions();
+
+        if(parseInt(100*value) < 100) ic.bTransparentSurface = true;
+      }
+      else if(command.indexOf('set surface2 opacity') == 0) {
+        ic.transparentRenderOrder = true;
         let  value = command.substr(command.lastIndexOf(' ') + 1);
         ic.opts['opacity'] = parseFloat(value);
         ic.applyMapCls.applySurfaceOptions();
@@ -904,7 +914,7 @@ class ApplyCommand {
             }
         }
       }
-      else if(commandOri.indexOf('dist') == 0) {
+      else if(commandOri.indexOf('dist ') == 0) {
         let  paraArray = commandOri.split(' | ');
         if(paraArray.length == 2) {
             let  setNameArray = paraArray[1].split(' ');
@@ -914,6 +924,20 @@ class ApplyCommand {
                 let  nameArray2 = setNameArray[1].split(',');
 
                 ic.analysisCls.measureDistTwoSets(nameArray, nameArray2);
+            }
+        }
+      }
+      else if(commandOri.indexOf('disttable') == 0) {
+        let  paraArray = commandOri.split(' | ');
+        if(paraArray.length == 2) {
+            let  setNameArray = paraArray[1].split(' ');
+
+            if(setNameArray.length == 2) {
+                let  nameArray = setNameArray[0].split(',');
+                let  nameArray2 = setNameArray[1].split(',');
+
+                ic.analysisCls.measureDistManySets(nameArray, nameArray2);
+                me.htmlCls.dialogCls.openDlg('dl_disttable', 'Distance among the sets');
             }
         }
       }
@@ -1139,6 +1163,24 @@ class ApplyCommand {
 
         ic.pickingCls.showPicking(ic.pAtom);
       }
+      else if(commandOri.indexOf('set color spectrum') == 0) {
+        let  paraArray = commandOri.split(' | ');
+        if(paraArray.length == 2) {
+            let  nameArray = paraArray[1].split(',');
+
+            let bSpectrum = true;
+            ic.setColorCls.setColorBySets(nameArray, bSpectrum);
+        }
+      }
+      else if(commandOri.indexOf('set color rainbow') == 0) {
+        let  paraArray = commandOri.split(' | ');
+        if(paraArray.length == 2) {
+            let  nameArray = paraArray[1].split(',');
+
+            let bSpectrum = false;
+            ic.setColorCls.setColorBySets(nameArray, bSpectrum);
+        }
+      }
       else if(commandOri.indexOf('color') == 0) {
         let  strArray = commandOri.split(" | ");
         let  color = strArray[0].substr(strArray[0].indexOf(' ') + 1);
@@ -1241,11 +1283,16 @@ class ApplyCommand {
             ic.bGlycansCartoon = false;
         }
       }
+      else if(command.indexOf('save html') == 0) {
+        let  id = command.substr(command.lastIndexOf(' ') + 1);
+        me.htmlCls.eventsCls.saveHtml(id);
+      }
 
     // special, select ==========
 
       else if(command.indexOf('select displayed set') !== -1) {
-        ic.hAtoms = me.hashUtilsCls.cloneHash(ic.dAtoms);
+        //ic.hAtoms = me.hashUtilsCls.cloneHash(ic.dAtoms);
+        ic.hAtoms = me.hashUtilsCls.cloneHash(ic.viewSelectionAtoms);
         ic.hlUpdateCls.updateHlAll();
       }
       else if(command.indexOf('select prop') !== -1) {
@@ -1404,7 +1451,9 @@ class ApplyCommand {
             ic.endColor = colorArray[3];
 
             let  legendHtml = me.htmlCls.clickMenuCls.setLegendHtml();
-            $("#" + me.pre + "legend").html(legendHtml).show();
+            //$("#" + me.pre + "legend").html(legendHtml).show();
+            $("#" + me.pre + "dl_legend").html(legendHtml);
+            me.htmlCls.dialogCls.openDlg('dl_legend', 'Color Range');
         }
     }
 

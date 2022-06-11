@@ -54,8 +54,12 @@ class Selection {
 
         for(let i in ic.chains) {
            ic.hAtoms = me.hashUtilsCls.unionHash(ic.hAtoms, ic.chains[i]);
-           ic.dAtoms = me.hashUtilsCls.unionHash(ic.dAtoms, ic.chains[i]);
+           //ic.dAtoms = me.hashUtilsCls.unionHash(ic.dAtoms, ic.chains[i]);
         }
+
+        ic.dAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+        ic.viewSelectionAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+        ic.ALTERNATE_STRUCTURE = -1
     }
 
     //Select a chain with the chain id "chainid" in the sequence dialog and save it as a custom selection with the name "commandname".
@@ -173,13 +177,14 @@ class Selection {
     selectSideChains() { let  ic = this.icn3d, me = ic.icn3dui;
         let  currHAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
 
-        let  nuclMainArray = ["C1'", "C1*", "C2'", "C2*", "C3'", "C3*", "C4'", "C4*", "C5'", "C5*", "O3'", "O3*", "O4'", "O4*", "O5'", "O5*", "P", "OP1", "O1P", "OP2", "O2P"];
+        //let  nuclMainArray = ["C1'", "C1*", "C2'", "C2*", "C3'", "C3*", "C4'", "C4*", "C5'", "C5*", "O3'", "O3*", "O4'", "O4*", "O5'", "O5*", "P", "OP1", "O1P", "OP2", "O2P"];
 
         ic.hAtoms = {}
         for(let i in currHAtoms) {
-            if((ic.proteins.hasOwnProperty(i) && ic.atoms[i].name !== "N" && ic.atoms[i].name !== "C" && ic.atoms[i].name !== "O"
-              && !(ic.atoms[i].name === "CA" && ic.atoms[i].elem === "C") )
-              ||(ic.nucleotides.hasOwnProperty(i) && nuclMainArray.indexOf(ic.atoms[i].name) === -1) ) {
+            if((ic.proteins.hasOwnProperty(i) && ic.atoms[i].name !== "N" && ic.atoms[i].name !== "H" 
+              && ic.atoms[i].name !== "C" && ic.atoms[i].name !== "O"
+              && !(ic.atoms[i].name === "CA" && ic.atoms[i].elem === "C") && ic.atoms[i].name !== "HA")
+              ||(ic.nucleotides.hasOwnProperty(i) && me.parasCls.nuclMainArray.indexOf(ic.atoms[i].name) === -1) ) {
                 ic.hAtoms[i] = 1;
             }
         }
@@ -285,11 +290,13 @@ class Selection {
 
     //Show the selection.
     showSelection() { let  ic = this.icn3d, me = ic.icn3dui;
-        ic.dAtoms = {}
+        ic.dAtoms = {};
 
         if(Object.keys(ic.hAtoms).length == 0) this.selectAll_base();
 
         ic.dAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+        ic.viewSelectionAtoms = me.hashUtilsCls.cloneHash(ic.hAtoms);
+        ic.ALTERNATE_STRUCTURE = -1;
 
         let  centerAtomsResults = ic.applyCenterCls.centerAtoms(me.hashUtilsCls.hash2Atoms(ic.dAtoms, ic.atoms));
         ic.maxD = centerAtomsResults.maxD;
@@ -414,9 +421,15 @@ class Selection {
       let  nameCommandArray = dataStr.trim().split('\n');
 
       for(let i = 0, il = nameCommandArray.length; i < il; ++i) {
-          let  nameCommand = nameCommandArray[i].split('\t');
-          let  name = nameCommand[0];
-          let  command = nameCommand[1];
+          //let  nameCommand = nameCommandArray[i].split('\t');
+          //let  name = nameCommand[0];
+          //let  command = nameCommand[1];
+
+          let  nameCommand = nameCommandArray[i].replace(/\t/g, ' ');
+          let pos1 = nameCommand.indexOf(' ');
+          
+          let  name = nameCommand.substr(0, pos1)
+          let  command = nameCommand.substr(pos1 + 1)
 
           let  pos = command.indexOf(' '); // select ...
 

@@ -107,7 +107,7 @@ class MmdbParser {
         //ic.loadAtomDataCls.loadAtomDataIn(data, id, 'mmdbid', undefined, type);
     }
 
-    parseMmdbData(data, type, chainid, chainIndex, bLastQuery) { let  ic = this.icn3d, me = ic.icn3dui;
+    parseMmdbData(data, type, chainid, chainIndex, bLastQuery, bNoTransformNoSeqalign) { let  ic = this.icn3d, me = ic.icn3dui;
         if(type === undefined) {
             //ic.deferredOpm = $.Deferred(function() {
                   let  id =(data.pdbId !== undefined) ? data.pdbId : data.mmdbId;
@@ -119,12 +119,12 @@ class MmdbParser {
 
             return;
         }
-        else {
+        else {        
             this.parseMmdbDataPart1(data, type);
 
             let  id =(data.pdbId !== undefined) ? data.pdbId : data.mmdbId;
 
-            let  hAtoms = ic.loadAtomDataCls.loadAtomDataIn(data, id, 'mmdbid', undefined, type, chainid, chainIndex, bLastQuery);
+            let  hAtoms = ic.loadAtomDataCls.loadAtomDataIn(data, id, 'mmdbid', undefined, type, chainid, chainIndex, bLastQuery, bNoTransformNoSeqalign);
 
             this.loadMmdbOpmDataPart2(data, id, type);
 
@@ -168,7 +168,7 @@ class MmdbParser {
           dataType: 'jsonp',
           cache: true,
           tryCount : 0,
-          retryLimit : 1,
+          retryLimit : 0, //1
           beforeSend: function() {
               ic.ParserUtilsCls.showLoading();
           },
@@ -197,7 +197,7 @@ class MmdbParser {
                   dataType: 'jsonp',
                   cache: true,
                   tryCount : 0,
-                  retryLimit : 1,
+                  retryLimit : 0, //1
                   beforeSend: function() {
                       ic.ParserUtilsCls.showLoading();
                   },
@@ -296,7 +296,7 @@ class MmdbParser {
             }
         }
 
-        if((me.cfg.align === undefined || me.cfg.chainalign === undefined) && Object.keys(ic.structures).length == 1) {
+        if((me.cfg.align === undefined || me.cfg.chainalign === undefined || me.cfg.mmdbafid === undefined) && Object.keys(ic.structures).length == 1) {
             if($("#" + ic.pre + "alternateWrapper") !== null) $("#" + ic.pre + "alternateWrapper").hide();
         }
 
@@ -358,7 +358,7 @@ class MmdbParser {
 
         if(type === undefined) ic.ParserUtilsCls.setYourNote(structure.toUpperCase() + '(MMDB) in iCn3D');
 
-        let bNCBI = (me.cfg.mmdbid || me.cfg.gi || me.cfg.align || me.cfg.chainalign || me.cfg.blast_rep_id);
+        let bNCBI = (me.cfg.mmdbid || me.cfg.gi || me.cfg.align || me.cfg.chainalign || me.cfg.mmdbafid || me.cfg.blast_rep_id);
 
         for(let molid in data.domains) {
             let chain = data.domains[molid].chain;
@@ -394,9 +394,9 @@ class MmdbParser {
 
                     for(let j = domainFrom; j <= domainTo; ++j) {
                         let resid;
+                        let residNCBI = chainid + '_' +(j+1).toString();
 
-                        if(bNCBI) {
-                            let residNCBI = chainid + '_' +(j+1).toString();
+                        if(bNCBI && ic.residNCBI2resid[residNCBI]) {
                             resid = ic.residNCBI2resid[residNCBI];
                         }
                         else {
@@ -434,7 +434,7 @@ class MmdbParser {
           dataType: 'json',
           cache: true,
           tryCount : 0,
-          retryLimit : 1,
+          retryLimit : 0, //1
           beforeSend: function() {
               //ic.ParserUtilsCls.showLoading();
           },

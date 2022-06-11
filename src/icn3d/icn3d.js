@@ -64,6 +64,7 @@ import {AnnoDomain} from './annotations/annoDomain.js';
 import {AnnoSnpClinVar} from './annotations/annoSnpClinVar.js';
 import {AnnoSsbond} from './annotations/annoSsbond.js';
 import {AnnoTransMem} from './annotations/annoTransMem.js';
+import {Domain3d} from './annotations/domain3d.js';
 
 import {AddTrack} from './annotations/addTrack.js';
 import {Annotation} from './annotations/annotation.js';
@@ -129,6 +130,8 @@ import {Ray} from './picking/ray.js';
 import {Control} from './picking/control.js';
 import {Picking} from './picking/picking.js';
 
+import {VRButton} from "../thirdparty/three/vr/VRButton.js";
+
 class iCn3D {
   constructor(icn3dui) { let me = icn3dui;
     this.icn3dui = icn3dui;
@@ -169,20 +172,41 @@ class iCn3D {
 
     this.bUsePdbNum = true;
 
+    let bWebGL, bWebGL2, bVR;
     if(!this.icn3dui.bNode) {
         let canvas = document.createElement( 'canvas' );
-        let bWebGL = !! ( window.WebGLRenderingContext && ( canvas.getContext( 'webgl' ) || canvas.getContext( 'experimental-webgl' ) ) );
+        bWebGL = !! ( window.WebGLRenderingContext && ( canvas.getContext( 'webgl' ) || canvas.getContext( 'experimental-webgl' ) ) );
+        canvas.remove();
+
+        canvas = document.createElement( 'canvas' );
+        bWebGL2 = !! ( window.WebGLRenderingContext && ( canvas.getContext( 'webgl2' ) ) );
+        canvas.remove();
+
+        bVR = ( 'xr' in navigator ); // possibly support VR
 
         if(bWebGL){
             //https://discourse.threejs.org/t/three-js-r128-ext-frag-depth-and-angle-instanced-arrays-extensions-are-not-supported/26037
-            //this.renderer = new THREE.WebGLRenderer({
-            this.renderer = new THREE.WebGL1Renderer({
-                canvas: this.oriContainer.get(0), //this.container.get(0),
-                antialias: true,
-                preserveDrawingBuffer: true,
-                sortObjects: false,
-                alpha: true
-            });
+            //this.renderer = new THREE.WebGL1Renderer({
+            if ( bWebGL2 && bVR) { 
+                this.renderer = new THREE.WebGLRenderer({
+                    canvas: this.oriContainer.get(0), //this.container.get(0),
+                    antialias: true,
+                    preserveDrawingBuffer: true,
+                    sortObjects: false,
+                    alpha: true
+                });
+                // Enable VR
+                this.renderer.xr.enabled = true;
+            }
+            else {
+                this.renderer = new THREE.WebGL1Renderer({
+                    canvas: this.oriContainer.get(0), //this.container.get(0),
+                    antialias: true,
+                    preserveDrawingBuffer: true,
+                    sortObjects: false,
+                    alpha: true
+                });
+            }
 
             this.overdraw = 0;
         }
@@ -239,22 +263,39 @@ class iCn3D {
     this.chainMissingResidueArray = {};
     this._zoomFactor = 1.0;
 
-    if(!this.icn3dui.bNode) {
-        this.bExtFragDepth = this.renderer.extensions.get( "EXT_frag_depth" );
-        if(!this.bExtFragDepth) {
-            this.bImpo = false;
-            console.log('EXT_frag_depth is NOT supported. All spheres and cylinders are drawn using geometry.');
-        }
-        else {
-            console.log('EXT_frag_depth is supported. All spheres and cylinders are drawn using shaders.');
-        }
+    this.transparentRenderOrder = false; // false: regular transparency; true: expensive renderOrder for each face
 
-        this.bInstanced = this.renderer.extensions.get( "ANGLE_instanced_arrays" );
-        if(!this.bInstanced) {
-            console.log('ANGLE_instanced_arrays is NOT supported. Assembly is drawn by making copies of the asymmetric unit.');
+    if(!this.icn3dui.bNode) {
+        if ( bWebGL2 && bVR) { 
+            // if(bVR) { // Meta browser (VR) has problems with imposter. The positions are wrong.
+            //     this.bExtFragDepth = false;
+            //     this.bImpo = false; 
+            // }
+            // else { // WebGL2 supports EXT_frag_depth and ANGLE_instanced_arrays
+                this.bExtFragDepth = true;
+                this.bImpo = true; 
+                //console.log('WebGL2 is supported. Thus EXT_frag_depth and ANGLE_instanced_arrays are supported. All spheres and cylinders are drawn using shaders. Assembly is drawn with one copy of the asymmetric unit using hardware instancing.');
+            // }
+
+            this.bInstanced = true;
         }
         else {
-            console.log('ANGLE_instanced_arrays is supported. Assembly is drawn with one copy of the asymmetric unit using hardware instancing.');
+            this.bExtFragDepth = this.renderer.extensions.get( "EXT_frag_depth" );
+            if(!this.bExtFragDepth) {
+                this.bImpo = false;
+                console.log('EXT_frag_depth is NOT supported. All spheres and cylinders are drawn using geometry.');
+            }
+            else {
+                console.log('EXT_frag_depth is supported. All spheres and cylinders are drawn using shaders.');
+            }
+
+            this.bInstanced = this.renderer.extensions.get( "ANGLE_instanced_arrays" );
+            if(!this.bInstanced) {
+                console.log('ANGLE_instanced_arrays is NOT supported. Assembly is drawn by making copies of the asymmetric unit.');
+            }
+            else {
+                console.log('ANGLE_instanced_arrays is supported. Assembly is drawn with one copy of the asymmetric unit using hardware instancing.');
+            }
         }
     }
 
@@ -369,9 +410,11 @@ class iCn3D {
     this.optsOri['background']         = 'black';              //transparent, black, grey, white
     this.optsOri['color']              = 'chain';              //spectrum, secondary structure, charge, hydrophobic, conserved, chain, residue, atom, b factor, red, green, blue, magenta, yellow, cyan, white, grey, custom
     this.optsOri['proteins']           = 'ribbon';             //ribbon, strand, cylinder and plate, schematic, c alpha trace, backbone, b factor tube, lines, stick, ball and stick, sphere, nothing
-    this.optsOri['sidec']              = 'nothing';            //lines, stick, ball and stick, sphere, nothing
+    this.optsOri['sidec']              = 'nothing';            //lines2, stick2, ball and stick2, sphere2, nothing
     this.optsOri['nucleotides']        = 'nucleotide cartoon'; //nucleotide cartoon, o3 trace, backbone, schematic, lines, stick,
                                                               // nucleotides ball and stick, sphere, nothing
+    this.optsOri['ntbase']             = 'nothing';            //lines2, stick2, ball and stick2, sphere2, nothing
+
     this.optsOri['surface']            = 'nothing';            //Van der Waals surface, molecular surface, solvent accessible surface, nothing
     this.optsOri['opacity']            = '1.0';                //1.0, 0.9, 0.8, 0.7, 0.6, 0.5
     this.optsOri['wireframe']          = 'no';                 //yes, no
@@ -514,6 +557,7 @@ class iCn3D {
     this.annoSnpClinVarCls = new AnnoSnpClinVar(this);
     this.annoSsbondCls = new AnnoSsbond(this);
     this.annoTransMemCls = new AnnoTransMem(this);
+    this.domain3dCls = new Domain3d(this);
 
     this.addTrackCls = new AddTrack(this);
     this.annotationCls = new Annotation(this);
@@ -572,6 +616,8 @@ class iCn3D {
     this.controlCls = new Control(this);
     this.pickingCls = new Picking(this);
 
+    this.VRButtonCls = new VRButton(this);
+
     // set this.matShader
     //This defines the highlight color using the outline method. It can be defined using the function setOutlineColor().
     this.matShader = this.setColorCls.setOutlineColor('yellow');
@@ -590,7 +636,7 @@ iCn3D.prototype.init = function (bKeepCmd) {
     //this.inputid = {"idtype": undefined, "id":undefined}; // support pdbid, mmdbid
 
     this.biomtMatrices = [];
-    this.bAssembly = false; //true;
+    this.bAssembly = true; //false; 
 
     this.bDrawn = false;
     this.bSecondaryStructure = false;
@@ -651,6 +697,7 @@ iCn3D.prototype.init_base = function (bKeepCmd) {
     this.hAtoms = {};
     this.proteins = {};
     this.sidec = {};
+    this.ntbase = {};
     this.nucleotides = {};
     this.nucleotidesO3 = {};
 
@@ -728,7 +775,7 @@ iCn3D.prototype.reinitAfterLoad = function () { let ic = this, me = ic.icn3dui;
     ic.lines = {};    // hash of name -> a list of solid or dashed lines. Each line contains 'position1', 'position2', 'color', and a boolean of 'dashed'
                         // line name could be custom, hbond, ssbond, distance
 
-    ic.bAssembly = false; //true;
+    ic.bAssembly = true; //false;
 };
 
 iCn3D.prototype.resetConfig = function () { let ic = this, me = ic.icn3dui;
@@ -752,6 +799,8 @@ iCn3D.prototype.resetConfig = function () { let ic = this, me = ic.icn3dui;
     }
 
     if(me.cfg.blast_rep_id !== undefined) this.opts['color'] = 'conservation';
+    if(me.cfg.mmdbafid !== undefined) this.opts['color'] = 'structure';
+
     if(me.cfg.options !== undefined) $.extend(this.opts, me.cfg.options);
 };
 

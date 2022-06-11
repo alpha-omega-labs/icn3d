@@ -47,6 +47,7 @@ class ShowAnno {
 
         if(ic.bAnnoShown === undefined || !ic.bAnnoShown || ic.bResetAnno) { // ic.bResetAnno when loading another structure
             let chainArray = Object.keys(ic.chains);
+
             if(ic.giSeq === undefined) ic.giSeq = {}
             if(ic.currClin === undefined) ic.currClin = {}
             if(ic.resi2disease_nonempty === undefined) ic.resi2disease_nonempty = {}
@@ -159,7 +160,7 @@ class ShowAnno {
                   dataType: 'jsonp',
                   //dataType: 'json',
                   tryCount : 0,
-                  retryLimit : 1,
+                  retryLimit : 0, //1
                   success: function(data) {
                     ic.seqStructAlignData = data;
                     thisClass.showAnnoSeqData(nucleotide_chainid, chemical_chainid, chemical_set);
@@ -199,7 +200,7 @@ class ShowAnno {
                     dataType: 'jsonp', //'text',
                     cache: true,
                     tryCount : 0,
-                    retryLimit : 1,
+                    retryLimit : 0, //1
                     success: function(chainid_seq) {
                         let index = 0;
                         for(let acc in chainid_seq) {
@@ -581,7 +582,7 @@ class ShowAnno {
                   // the missing residues at the end of the seq will be filled up in the API showNewTrack()
                   let nGap = 0;
                   ic.alnChainsSeq[chnid] = [];
-                  let offset =(ic.chainid2offset[chnid]) ? ic.chainid2offset[chnid] : 0;
+                  let offset =(ic.chainid2offset[chnid]) ? ic.chainid2offset[chnid] : 0;                
                   for(let i = 0, il = targetSeq.length; i < il; ++i) {
                       //text += ic.showSeqCls.insertGap(chnid, i, '-', true);
                       if(ic.targetGapHash.hasOwnProperty(i)) {

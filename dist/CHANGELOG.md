@@ -1,4 +1,38 @@
 ## Change Log
+[icn3d-3.12.2](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.12.2.zip) was release on June 10, 2022. Made two kinds of transparent surfaces available in the menu "Style > Surface Opacity": "Fast Transparency" and "Slow Transparency".
+
+[icn3d-3.12.1](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.12.1.zip) was release on June 8, 2022. Fixed the bug about exporting iCn3D PNG Image.
+
+[icn3d-3.12.0](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.12.0.zip) was release on June 6, 2022. Users now can have Virtual Reality (VR) view on any iCn3D display; enabled to view multiple seqeunce alignment (MSA) instead of pairwise alignment; changed the tools in toolbar from buttons to icons; switched to WegGL2 from WebGL1.
+
+[icn3d-3.11.8](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.11.8.zip) was release on May 20, 2022. Enabled to import "icn3d.css" and "three.module.js" from npm icn3d to work with React.
+
+[icn3d-3.11.7](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.11.7.zip) was release on May 18, 2022. Enabled to import "icn3d.module.js" from npm icn3d to work with React.
+
+[icn3d-3.11.6](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.11.6.zip) was release on May 11, 2022. Fixed a bug in the dynamic VAST alignment in iCn3D with the menu "File > Realign Selection > by Structure Alignment".
+
+[icn3d-3.11.5](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.11.5.zip) was release on May 3, 2022. Added VAST+ and VAST Search interface in the menu "File > Search Similar". Enabled to assign rainbow/spectrum colors for a list of sets in the menu "Color > Rainbow/Spectrum > for Sets".
+
+[icn3d-3.11.4](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.11.4.zip) was release on April 26, 2022. Added two examples in https://ww.ncbi.nlm.nih.gov/Structure/icn3d/example.html to show the predefined alignment of two PDB files, or the predefined alignment of one PDB file to other chains.
+
+[icn3d-3.11.3](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.11.3.zip) was release on April 22, 2022. Added the menu "Style > Nucl. Bases" to display the bases of nucleotides.
+
+[icn3d-3.11.2](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.11.2.zip) was release on April 18, 2022. Added "[comment]" in front of logs to diferentiate from commands in the command window. If "mmdbid" is the input and the parameter "bu" is not defined, set "bu" as 1 (biological unit).
+
+[icn3d-3.11.1](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.11.1.zip) was release on April 13, 2022. Users can input multiple PDB, MMDB, or AlphaFold IDs with the menu "File > Retrieve by ID > MMDB or AlphaFold IDs". Users can also load multiple PDB files at the same time with the menu "File > Open File > PDB Files (appendable)". The color legend became draggable.
+
+[icn3d-3.11.0](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.11.0.zip) was release on March 28, 2022. Users can align AlphaFold structures or PDB structures with the menu "File > Align > Multiple Chains" or "File > Align > Structure to Structure > Two AlphaFold Structures". Users can also load any structures as usual, then load your custom PDB file with the menu "File > Open File > PDB File (appendable)", then relaign these structures with the meu "File > Realign Selection > by Structure Alignment".
+
+[icn3d-3.10.1](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.10.1.zip) was release on March 9, 2022. Added the color option "Structure" and the style option "Hydrogens". Fixed some bugs on loading PDB files without headers.
+
+[icn3d-3.10.0](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.10.0.zip) was release on March 7, 2022. Showed SNP and ClinVar annotations for AlphaFold structures.
+
+[icn3d-3.9.0](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.9.0.zip) was release on February 28, 2022. Showed 3D domains for AlphaFold structures or any custom structures.
+
+[icn3d-3.8.4](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.8.4.zip) was release on February 22, 2022. Enabled to export the content of any iCn3D dialog/popup window using a Python script in the command line. One example is at https://github.com/ncbi/icn3d/blob/master/icn3dpython/batch_export_panel.py.
+
+[icn3d-3.8.3](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.8.3.zip) was release on February 17, 2022. Another paper about iCn3D was published in Frontiers (https://www.frontiersin.org/articles/10.3389/fmolb.2022.831740/full). Fixed some bugs as well.
+
 [icn3d-3.8.2](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.8.2.zip) was release on February 7, 2022. Enabled to show mutations for AlphaFold structures in the menu "Analysis > Mutation". Fixed the 2D interaction network view of mutations.
 
 [icn3d-3.8.1](https://www.ncbi.nlm.nih.gov/Structure/icn3d/icn3d-3.8.1.zip) was release on January 28, 2022. Upgrade three.js from version 128 to 137 to avoid the security issues related to iframe.

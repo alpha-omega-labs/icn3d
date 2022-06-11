@@ -220,7 +220,9 @@ class ApplyDisplay {
           // 14 styles: ribbon, strand, cylinder and plate, nucleotide cartoon, o3 trace, schematic, c alpha trace, b factor tube, lines, stick, ball and stick, sphere, dot, nothing
           let atomHash = ic.style2atoms[style];
           //var bPhosphorusOnly = me.utilsCls.isCalphaPhosOnly(me.hashUtilsCls.hash2Atoms(atomHash), "O3'", "O3*") || me.utilsCls.isCalphaPhosOnly(me.hashUtilsCls.hash2Atoms(atomHash), "P");
-          let bPhosphorusOnly = me.utilsCls.isCalphaPhosOnly(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms));
+          //let bPhosphorusOnly = me.utilsCls.isCalphaPhosOnly(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms));
+          let nucleotidesAtoms = me.hashUtilsCls.intHash(atomHash, ic.nucleotides);
+          let bPhosphorusOnly = me.utilsCls.isCalphaPhosOnly(me.hashUtilsCls.hash2Atoms(nucleotidesAtoms, ic.atoms));
 
           if(style === 'ribbon') {
           //if(style === 'ribbon' && (!bHighlight || (bHighlight && !bOnlySideChains))) {
@@ -284,7 +286,7 @@ class ApplyDisplay {
           else if(style === 'custom tube') {
             ic.tubeCls.createTube(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), 'CA', null, bHighlight, true, true);
           }
-          else if(style === 'lines') {
+          else if(style === 'lines' || style === 'lines2') {
             if(bHighlight === 1) {
                 ic.stickCls.createStickRepresentation(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), ic.hlLineRadius, ic.hlLineRadius, undefined, bHighlight);
             }
@@ -294,7 +296,7 @@ class ApplyDisplay {
 
             ic.lineCls.createConnCalphSidechain(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), style);
           }
-          else if(style === 'stick') {
+          else if(style === 'stick' || style === 'stick2') {
             ic.stickCls.createStickRepresentation(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), ic.cylinderRadius, ic.cylinderRadius, undefined, bHighlight, undefined);
             ic.lineCls.createConnCalphSidechain(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), style);
           }
@@ -302,11 +304,11 @@ class ApplyDisplay {
             atomHash = this.selectMainChainSubset(atomHash);
             ic.stickCls.createStickRepresentation(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), ic.cylinderRadius, ic.cylinderRadius, undefined, bHighlight, undefined);
           }
-          else if(style === 'ball and stick') {
+          else if(style === 'ball and stick' || style === 'ball and stick2') {
             ic.stickCls.createStickRepresentation(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), ic.cylinderRadius, ic.cylinderRadius * 0.5, ic.dotSphereScale, bHighlight, undefined);
             ic.lineCls.createConnCalphSidechain(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), style);
           }
-          else if(style === 'sphere') {
+          else if(style === 'sphere' || style === 'sphere2') {
             ic.sphereCls.createSphereRepresentation(me.hashUtilsCls.hash2Atoms(atomHash, ic.atoms), ic.sphereRadius, undefined, undefined, bHighlight);
           }
           else if(style === 'dot') {

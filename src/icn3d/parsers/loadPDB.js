@@ -15,7 +15,9 @@ class LoadPDB {
 
     // modified from iview (http://istar.cse.cuhk.edu.hk/iview/)
     //This PDB parser feeds the viewer with the content of a PDB file, pdbData.
-    loadPDB(src, pdbid, bOpm, bVector, bMutation, bAppend) { let  ic = this.icn3d, me = ic.icn3dui;
+    loadPDB(src, pdbid, bOpm, bVector, bMutation, bAppend, type, bLastQuery) { let  ic = this.icn3d, me = ic.icn3dui;
+        let hAtoms = {};
+
         let bNMR = false;
         let  lines = src.split('\n');
 
@@ -67,18 +69,20 @@ class LoadPDB {
 
         //let  chainMissingResidueArray = {}
 
-        let  id = (pdbid) ? pdbid : 'stru';
+        let  id = (pdbid) ? pdbid : 'STRU';
 
         let  maxMissingResi = 0, prevMissingChain = '';
         let  CSerial, prevCSerial, OSerial, prevOSerial;
 
-        let  structure = "stru";
+        let  structure = "STRU";
+
+        let bHeader = false;
 
         for (let i in lines) {
             let  line = lines[i];
             let  record = line.substr(0, 6);
 
-            if (record === 'HEADER') {
+            if (record === 'HEADER' && !bHeader) {              
                 // if(bOpm === undefined || !bOpm) ic.bSecondaryStructure = true;
 
                 ///id = line.substr(62, 4).trim();
@@ -86,22 +90,24 @@ class LoadPDB {
 
                 if(id == '') {
                     if(bAppend) {
-                        id = "stru";
+                        id = "STRU";
                     }
                     else {
-                        //if(!ic.inputid) ic.inputid = 'stru';
-                        id = (ic.inputid && ic.inputid.indexOf('/') == -1) ? ic.inputid.substr(0, 10) : "stru"; //ic.filename.substr(0, 4);
+                        //if(!ic.inputid) ic.inputid = 'STRU';
+                        id = (ic.inputid && ic.inputid.indexOf('/') == -1) ? ic.inputid.substr(0, 10) : "STRU"; //ic.filename.substr(0, 4);
                     }
                 }
 
                 structure = id;
 
-                if(id == 'stru' || bMutation || (bAppend && id.length != 4)) { // bMutation: side chain prediction
-                    structure = (moleculeNum === 1) ? id : id + moleculeNum.toString();
+                //if(id == 'STRU' || bMutation || (bAppend && id.length != 4)) { // bMutation: side chain prediction
+                if(id == 'STRU' || bMutation) { // bMutation: side chain prediction
+                        structure = (moleculeNum === 1) ? id : id + moleculeNum.toString();
                 }
 
                 ic.molTitle = '';
 
+                bHeader = true; // read the first header if there are multiple
             } else if (record === 'TITLE ') {
                 let  name = line.substr(10);
                 ic.molTitle += name.trim() + " ";
@@ -146,42 +152,9 @@ class LoadPDB {
 
                   if(j === startResi) sheetStart.push(resid);
                   if(j === endResi) sheetEnd.push(resid);
-                }
-/*
-                sheets.push({
-                    structure: structure,
-                    chain: startChain,
-                    initialResidue: startResi,
-                    initialInscode: line.substr(26, 1),
-                    terminalResidue: endResi,
-                    terminalInscode: line.substr(37, 1),
-                });
-*/                
+                }           
             } else if (record === 'HBOND ') {
                 if(bOpm === undefined || !bOpm) ic.bSecondaryStructure = true;
-    /*
-                //HBOND A 1536   N2 A   59  ND2  -19.130  83.151  52.266 -18.079  81.613  49.427    3.40
-                bCalculateHbond = false;
-
-                let  chemicalChain = line.substr(6, 1);
-                let  chemicalResi = line.substr(8, 4).trim();
-                let  chemicalAtom = line.substr(14, 4).trim();
-                let  proteinChain = line.substr(18, 1);
-                let  proteinResi = line.substr(20, 4).trim();
-                let  proteinAtom = line.substr(25, 4).trim();
-
-                let  chemical_x = parseFloat(line.substr(30, 8));
-                let  chemical_y = parseFloat(line.substr(38, 8));
-                let  chemical_z = parseFloat(line.substr(46, 8));
-                let  protein_x = parseFloat(line.substr(54, 8));
-                let  protein_y = parseFloat(line.substr(62, 8));
-                let  protein_z = parseFloat(line.substr(70, 8));
-
-                let  dist = line.substr(78, 8).trim();
-
-                ic.hbondpnts.push(new THREE.Vector3(chemical_x, chemical_y, chemical_z));
-                ic.hbondpnts.push(new THREE.Vector3(protein_x, protein_y, protein_z));
-    */
             } else if (record === 'SSBOND') {
                 ic.bSsbondProvided = true;
                 //SSBOND   1 CYS E   48    CYS E   51                          2555
@@ -261,11 +234,12 @@ class LoadPDB {
                 ic.organism = ic.organism.substr(0, ic.organism.length - 1);
             } else if (record === 'ENDMDL') {
                 ++moleculeNum;
-                id = 'stru';
+                id = 'STRU';
 
                 structure = id;
-                if(id == 'stru' || bMutation || (bAppend && id.length != 4)) { // bMutation: side chain prediction
-                    structure = (moleculeNum === 1) ? id : id + moleculeNum.toString();
+                //if(id == 'STRU' || bMutation || (bAppend && id.length != 4)) { // bMutation: side chain prediction
+                if(id == 'STRU' || bMutation) { // bMutation: side chain prediction
+                        structure = (moleculeNum === 1) ? id : id + moleculeNum.toString();
                 }
 
                 //helices = [];
@@ -278,11 +252,19 @@ class LoadPDB {
                     helixStart = [];
                     helixEnd = [];
                 }
+
+                bHeader = false; // reinitialize to read structure name from the header
             } else if (record === 'JRNL  ') {
                 if(line.substr(12, 4) === 'PMID') {
                     ic.pmid = line.substr(19).trim();
                 }
             } else if (record === 'ATOM  ' || record === 'HETATM') {
+                structure = id;
+                //if(id == 'STRU' || bMutation || (bAppend && id.length != 4)) { // bMutation: side chain prediction
+                if(id == 'STRU' || bMutation) { // bMutation: side chain prediction
+                        structure = (moleculeNum === 1) ? id : id + moleculeNum.toString();
+                }
+
                 let  alt = line.substr(16, 1);
                 //if (alt !== " " && alt !== "A") continue;
 
@@ -380,6 +362,7 @@ class LoadPDB {
 
                 ic.dAtoms[serial] = 1;
                 ic.hAtoms[serial] = 1;
+                hAtoms[serial] = 1;
 
                 // Assign secondary structures from the input
                 // if a residue is assigned both sheet and helix, it is assigned as sheet
@@ -452,7 +435,7 @@ class LoadPDB {
                         chainsTmp = {}
 
                         if(ic.structures[structure.toString()] === undefined) ic.structures[structure.toString()] = [];
-                        ic.structures[structure.toString()].push(chainNum);
+                        if(!ic.structures[structure.toString()].includes(chainNum)) ic.structures[structure.toString()].push(chainNum);
 
                         if(ic.chainsSeq[chainNum] === undefined) ic.chainsSeq[chainNum] = [];
 
@@ -534,22 +517,7 @@ class LoadPDB {
 
         // calculate disulfide bonds for PDB files
         if(!ic.bSsbondProvided) {
-            // get all Cys residues
-            let  structure2cys_resid = {}
-            for(let chainid in ic.chainsSeq) {
-                let  seq = ic.chainsSeq[chainid];
-                let  structure = chainid.substr(0, chainid.indexOf('_'));
-
-                for(let i = 0, il = seq.length; i < il; ++i) {
-                    // each seq[i] = {"resi": 1, "name":"C"}
-                    if(seq[i].name == 'C') {
-                        if(structure2cys_resid[structure] == undefined) structure2cys_resid[structure] = [];
-                        structure2cys_resid[structure].push(chainid + '_' + seq[i].resi);
-                    }
-                }
-            }
-
-            this.setSsbond(structure2cys_resid);
+            this.setSsbond();
         }
 
         // remove the reference
@@ -598,6 +566,10 @@ class LoadPDB {
 
                     ic.secondaries[atom.structure + '_' + atom.chain + '_' + atom.resi] = 'o'; // nucleotide
                 }
+
+                if(me.parasCls.nuclMainArray.indexOf(atom.name) === -1) {
+                    ic.ntbase[atom.serial] = 1;
+                }
               }
               else {
                 if (atom.elem === 'P') {
@@ -606,7 +578,7 @@ class LoadPDB {
 
                 ic.proteins[atom.serial] = 1;
                 if (atom.name === 'CA') ic.calphas[atom.serial] = 1;
-                if (atom.name !== 'N' && atom.name !== 'CA' && atom.name !== 'C' && atom.name !== 'O') ic.sidec[atom.serial] = 1;
+                if (atom.name !== 'N' && atom.name !== 'H' && atom.name !== 'CA' && atom.name !== 'HA' && atom.name !== 'C' && atom.name !== 'O') ic.sidec[atom.serial] = 1;
               }
             }
             else if(atom.het) {
@@ -643,7 +615,7 @@ class LoadPDB {
         } // end of for
 
         // reset lipid
-        for(resid in lipidResidHash) {
+        for(let resid in lipidResidHash) {
             let  atomHash = ic.residues[resid];
             for(serial in atomHash) {
                 let  atom = ic.atoms[serial];
@@ -654,7 +626,7 @@ class LoadPDB {
 
                 delete ic.proteins[atom.serial];
                 if (atom.name === 'CA') delete ic.calphas[atom.serial];
-                if (atom.name !== 'N' && atom.name !== 'CA' && atom.name !== 'C' && atom.name !== 'O') delete ic.sidec[atom.serial];
+                if (atom.name !== 'N' && atom.name !== 'H' && atom.name !== 'CA' && atom.name !== 'HA' && atom.name !== 'C' && atom.name !== 'O') delete ic.sidec[atom.serial];
             }
         }
 
@@ -677,8 +649,22 @@ class LoadPDB {
         ic.oriMaxD = ic.maxD;
         ic.oriCenter = ic.center.clone();
 
+        if(type === 'target') {
+            ic.oriMaxD = ic.maxD;
+            ic.center1 = ic.center;
+        }
+        else if(type === 'query') {
+            if(ic.oriMaxD < ic.maxD) ic.oriMaxD = ic.maxD;
+
+            ic.center2 = ic.center;
+            ic.center = new THREE.Vector3(0,0,0);
+        }
+
         if(bVector) { // just need to get the vector of the largest chain
             return this.getChainCalpha(ic.chains, ic.atoms);
+        }
+        else {
+            return hAtoms;
         }
     }
 
@@ -754,7 +740,23 @@ class LoadPDB {
         }
     }
 
-    setSsbond(structure2cys_resid) { let  ic = this.icn3d, me = ic.icn3dui;
+    setSsbond() { let  ic = this.icn3d, me = ic.icn3dui;
+        // get all Cys residues
+        let  structure2cys_resid = {};
+
+        for(let chainid in ic.chainsSeq) {
+            let  seq = ic.chainsSeq[chainid];
+            let  structure = chainid.substr(0, chainid.indexOf('_'));
+
+            for(let i = 0, il = seq.length; i < il; ++i) {
+                // each seq[i] = {"resi": 1, "name":"C"}
+                if(seq[i].name == 'C') {
+                    if(structure2cys_resid[structure] == undefined) structure2cys_resid[structure] = [];
+                    structure2cys_resid[structure].push(chainid + '_' + seq[i].resi);
+                }
+            }
+        }
+
         // determine whether there are disulfide bonds
         // disulfide bond is about 2.05 angstrom
         let  distMax = 4; //3; // https://icn3d.page.link/5KRXx6XYfig1fkye7

@@ -23,9 +23,9 @@ class AnnoCddSite {
         let chnidArray = Object.keys(ic.protein_chainid);
         // show conserved domains and binding sites
         // live search
-//        let url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&live=lcl&queries=" + chnidBaseArray;
+        let url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&frclive&live=lcl&queries=" + chnidBaseArray;
         // precalculated
-        let url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&queries=" + chnidBaseArray;
+        //let url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&live=lcl&queries=" + chnidBaseArray;
         // live search for AlphaFold structures
         //if(me.cfg.afid) {
 
@@ -37,7 +37,7 @@ class AnnoCddSite {
               dataType: 'jsonp',
               cache: true,
               tryCount : 0,
-              retryLimit : 1,
+              retryLimit : 0, //1
               success: function(data) {
                 thisClass.parseCddData([data], chnidArray);
                 if(ic.deferredAnnoCddSite !== undefined) ic.deferredAnnoCddSite.resolve();
@@ -68,7 +68,10 @@ class AnnoCddSite {
                seq = seq.replace(/O/g, '');
 
                //url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&live=lcl&queries=" + ic.giSeq[chnidArray[0]].join('');
-               url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&live=lcl&queries=" + seq;
+               // live searchE
+               url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&frclive&live=lcl&queries=" + seq;
+               // precalculated
+               //url = me.htmlCls.baseUrl + "cdannots/cdannots.fcgi?fmt&live=lcl&queries=" + seq;
 
                let cdd = $.ajax({
                   url: url,

@@ -65,6 +65,14 @@ class SetStyle {
             }
         }
 
+        if (options.ntbase !== undefined && options.ntbase !== 'nothing') {
+          selectedAtoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.ntbase);
+
+          for(let i in selectedAtoms) {
+            ic.atoms[i].style2 = options.ntbase.toLowerCase();
+          }
+        }
+
         if (options.chemicals !== undefined) {
             selectedAtoms = me.hashUtilsCls.intHash(ic.hAtoms, ic.chemicals);
             for(let i in selectedAtoms) {
@@ -95,6 +103,7 @@ class SetStyle {
     }
 
     setBackground(color) {var ic = this.icn3d, me = ic.icn3dui;
+      
        ic.setOptionCls.setOption('background', color);
        me.htmlCls.clickMenuCls.setLogCmd('set background ' + color, true);
        //let titleColor =(color == 'black' || color == 'transparent') ? me.htmlCls.GREYD : 'black';

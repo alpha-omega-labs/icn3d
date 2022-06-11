@@ -20,7 +20,7 @@ class ShareLink {
            if(bPngHtml) url += "&random=" + parseInt(Math.random() * 1000); // generate a new shorten URL and thus image name everytime
            //var inputid =(ic.inputid) ? ic.inputid : "custom";
            let inputid = Object.keys(ic.structures).join('_');
-           if(inputid == 'stru') {
+           if(inputid == 'STRU') {
                if(ic.filename) {
                    inputid = ic.filename;
                }
@@ -31,7 +31,7 @@ class ShareLink {
 
            if(!bPngHtml) {
                if(ic.bInputfile && !ic.bInputUrlfile) {
-                   alert("Share Link does NOT work when the data is from custom files. Please save 'iCn3D PNG Image' in the File menu and open it in iCn3D.");
+                   alert("Share Link does NOT work when the data are from custom files. Please save 'iCn3D PNG Image' in the File menu and open it in iCn3D.");
                    return;
                }
                if(bTooLong) {
@@ -129,7 +129,7 @@ class ShareLink {
 
                 if(key === 'simplemenu' && value === false) continue;
                 if(key === 'mobilemenu' && value === false) continue;
-                if(key === 'closepopup' && value === false) continue;
+                //if(key === 'closepopup' && value === false) continue;
                 if(key === 'showanno' && value === false) continue;
                 if(key === 'showseq' && value === false) continue;
                 if(key === 'showalignseq' && value === false) continue;
@@ -229,6 +229,11 @@ class ShareLink {
                let command_tf = ic.commands[i].split('|||');
                let command_tf2 = command_tf[0].split('&command=');
                let commandStr = command_tf2[0].trim();
+
+               // only one load command
+               //if(prevCommandStr.substr(0, 5) == 'load ' && commandStr.substr(0, 5) == 'load ') {
+               //    continue;
+               //}
 
                //statefile += ic.commands[i] + "\n";
 

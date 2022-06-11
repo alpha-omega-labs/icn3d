@@ -61,7 +61,7 @@ class ContactMap {
             dataType: dataType,
             cache: true,
             tryCount : 0,
-            retryLimit : 1,
+            retryLimit : 0, //1
             success: function(data) {
                 thisClass.processAfErrorMap(data, bFull);
             },
@@ -214,7 +214,7 @@ class ContactMap {
 
         let graphStr = '{\n';
 
-        let struc1 = (ic.structures.length > 0) ? ic.structures[0] : 'stru';
+        let struc1 = (ic.structures.length > 0) ? ic.structures[0] : 'STRU';
         let len1 = nodeArray1.length,
             len2 = nodeArray2.length;
         let factor = 1;

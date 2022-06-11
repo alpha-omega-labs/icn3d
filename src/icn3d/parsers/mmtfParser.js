@@ -356,7 +356,7 @@ class MmtfParser {
                       ic.proteins[serial] = 1;
 
                       if(atomName === 'CA') ic.calphas[serial] = 1;
-                      if(atomName !== 'N' && atomName !== 'CA' && atomName !== 'C' && atomName !== 'O') ic.sidec[serial] = 1;
+                      if(atomName !== 'N' && atomName !== 'H' && atomName !== 'CA' && atomName !== 'HA' && atomName !== 'C' && atomName !== 'O') ic.sidec[serial] = 1;
                     }
                     else if(bNucleotide) {
                       ic.nucleotides[serial] = 1;
@@ -366,6 +366,10 @@ class MmtfParser {
                       }
                       else if(!bFull && atomName == 'P') {
                           ic.nucleotidesO3[serial] = 1;
+                      }
+
+                      if(me.parasCls.nuclMainArray.indexOf(atomName) === -1) {
+                        ic.ntbase[serial] = 1;
                       }
                     }
                     else {

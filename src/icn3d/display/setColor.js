@@ -18,6 +18,10 @@ class SetColor {
     colorSpectrum(atoms) { let ic = this.icn3d, me = ic.icn3dui;
         let idx = 0;
         let cnt = 0;
+
+        // for selected atoms
+        atoms = me.hashUtilsCls.intHash(atoms, ic.hAtoms);
+
         for (let i in atoms) {
             let atom = ic.atoms[i];
             if(!atom.het) ++cnt;
@@ -36,6 +40,10 @@ class SetColor {
     colorRainbow(atoms) { let ic = this.icn3d, me = ic.icn3dui;
         let idx = 0;
         let cnt = 0;
+
+        // for selected atoms
+        atoms = me.hashUtilsCls.intHash(atoms, ic.hAtoms);
+
         for (let i in atoms) {
             let atom = ic.atoms[i];
             if(!atom.het) ++cnt;
@@ -48,6 +56,31 @@ class SetColor {
 
             ic.atomPrevColors[i] = atom.color;
         }
+    }
+
+    setColorBySets(nameArray, bSpectrum) { let ic = this.icn3d, me = ic.icn3dui;
+        let idx = 0;
+        let cnt = nameArray.length;
+
+        let lastTerSerialInv = (cnt > 1) ? 1 / (cnt - 1) : 1;
+        for(let i = 0, il = nameArray.length; i < il; ++i) {
+            let atomSet = ic.definedSetsCls.getAtomsFromNameArray([nameArray[i]]);
+            for (let serial in atomSet) {
+                let atom = ic.atoms[serial];
+
+                if(bSpectrum) {
+                    atom.color = me.parasCls.thr().setHSL(3 / 4 * (1 - idx * lastTerSerialInv), 1, 0.45);
+                }
+                else { // rainbow
+                    atom.color = me.parasCls.thr().setHSL(3 / 4 *  idx * lastTerSerialInv, 1, 0.45);
+                }
+
+                ic.atomPrevColors[serial] = atom.color;
+            }
+            ++idx;
+        }
+
+        ic.drawCls.draw();
     }
 
     //Set atom color according to the definition in options (options.color).
@@ -96,6 +129,31 @@ class SetColor {
                     this.colorSpectrum(ic.chains[chainid]);
                 }
                 break;
+
+            case 'structure':
+                let index = -1, prevStructure = '', colorLength = me.parasCls.stdChainColors.length;
+                for (let i in atoms) {
+                    let atom = ic.atoms[i];
+
+                    if(atom.structure != prevStructure) {
+                        ++index;
+
+                        index = index % colorLength;
+                    }
+
+                    if(!atom.het) {
+                        atom.color = me.parasCls.stdChainColors[index];
+                        ic.atomPrevColors[i] = atom.color;
+                    }
+                    else{
+                        atom.color = me.parasCls.atomColors[atom.elem];
+                        ic.atomPrevColors[i] = atom.color;
+                    }
+
+                    prevStructure = atom.structure;
+                }
+                break;
+
             case 'chain':
                 if(ic.chainsColor !== undefined && Object.keys(ic.chainsColor).length > 0) { // mmdb input
                     this.setMmdbChainColor();
@@ -406,9 +464,11 @@ class SetColor {
                 }
 
                 let  legendHtml = me.htmlCls.clickMenuCls.setLegendHtml(true);
-                $("#" + me.pre + "legend").removeClass('icn3d-legend');
-                $("#" + me.pre + "legend").addClass('icn3d-legend2');
-                $("#" + me.pre + "legend").html(legendHtml).show();
+                //$("#" + me.pre + "legend").removeClass('icn3d-legend');
+                //$("#" + me.pre + "legend").addClass('icn3d-legend2');
+                //$("#" + me.pre + "legend").html(legendHtml).show();
+                $("#" + me.pre + "dl_legend").html(legendHtml);
+                me.htmlCls.dialogCls.openDlg('dl_legend', 'Color legend');
 
                 break;
 

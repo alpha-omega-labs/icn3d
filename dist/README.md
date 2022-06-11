@@ -11,6 +11,8 @@
     As mentioned in the menu "Help > Transformation Hints", you can use Left mouse button for rotation, Middle mouse wheel for zooming, and Right mouse button for translation. 
 
     The most important point about using iCn3D is the current selection. Any operations on color, style, etc. are working on the current selection. By default, all atoms are selected. Once you select any subset, your operation will work ONLY on the subset. You can switch the selection using the toggle next to the Help menu.
+    
+* [Virtual Reality view](https://youtu.be/2VOPlldGbUA) of structures in iCn3D
 
 * <b>Create custom 3D view</b>: 
     You first open a structure in "File" menu, then select a subset in "Select" menu, view only the selected subset by clicking "View Only Selection" in View menu, finally change styles or colors in "Style" and "Color" menus. 
@@ -25,10 +27,16 @@
     All "Share Link" URLs can show the original view using the archived version of iCn3D by clicking "Open File > Share Link in Archived Ver." in "File" menu.    
 
 * <b>Python scripts to batch process structures</b>: 
-    Python scripts can be used to process 3D structures (e.g., export secondary structures or PNG images) in batch mode. The example scripts are at [icn3dpython](https://github.com/ncbi/icn3d/tree/master/icn3dpython).
+    Python scripts can be used to process 3D structures (e.g., export secondary structures, PNG images, or analysis output) in batch mode. The example scripts are at [icn3dpython](https://github.com/ncbi/icn3d/tree/master/icn3dpython).
 
 * <b>Node.js scripts using npm "icn3d" to batch process structures</b>: 
     You can download [npm "icn3d" package](https://www.npmjs.com/package/icn3d) to write Node.js scripts by calling iCn3D functions. These scripts can be used to process 3D structures (e.g., calculate interactions) in batch mode. The example scripts are at [icn3dnode](https://github.com/ncbi/icn3d/tree/master/icn3dnode).
+
+* <b>Annotations for AlphaFold structures</b>: 
+    For any custom structures such as AlphaFold structures, you can show [conserved domain and 3D domain annotations](https://structure.ncbi.nlm.nih.gov/icn3d/share.html?bPSkpeshtiH1TxbP8). For AlphaFold structures, you can also show [SNP and ClinVar annotations](https://structure.ncbi.nlm.nih.gov/icn3d/share.html?XSQ5oqDCTfEQ3iAY7).
+
+* <b>Align AlphaFold structures</b>: 
+    You can align [AlphaFold structures or PDB structures](https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?chainalign=P69905_A,P01942_A,1HHO_A&showalignseq=1&bu=0) with the menu "File > Align > Multiple Chains" or "File > Align > Structure to Structure > Two AlphaFold Structures". You can also load any structures as usual, then load your custom PDB file with the menu "File > Open File > PDB File (appendable)", then relaign these structures with the meu "File > Realign Selection > by Structure Alignment".
 
 * <b>Alternate SNPs in 3D</b>: 
     You can [alternate in 3D wild type and mutant of SNPs](https://structure.ncbi.nlm.nih.gov/icn3d/share.html?fNpzDuUE287SBFtz8) by clicking the menu "Analysis > Sequences & Annotations", the tab "Details", the checkbox "SNP", and mouseover on SNPs.
@@ -66,10 +74,10 @@ iCn3D accepts the following IDs:
 * <b>mmtfid</b>: MMTF ID, e.g., [https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?mmtfid=1tup&show2d=1&showsets=1](https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?mmtfid=1tup&showanno=1&showsets=1)
 * <b>pdbid</b>: PDB ID, e.g., [https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?pdbid=1tup&showanno=1&showsets=1](https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?pdbid=1tup&showanno=1&showsets=1)
 * <b>afid</b>: AlphaFold UniProt ID, e.g., [https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?afid=A0A061AD48&showanno=1&showsets=1](https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?afid=A0A061AD48&showanno=1&showsets=1)
+* <b>mmdbafid</b>: A list of PDB or AlphaFold UniProt IDs for realignment, e.g., [https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?mmdbafid=1HHO,4N7N,P69905,P01942](https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?mmdbafid=1HHO,4N7N,P69905,P01942). You can then input multiple PDB files with the menu "File > Open File > PDB Files (appendable)". Next you can click the menu "File > Realign Selection > by Structure Alignment" to realign all loaded structures.
 * <b>opmid</b>: Orientations of Proteins in Membranes(OPM) PDB ID, e.g., [https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?opmid=6jxr&show2d=1&showsets=1](https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?opmid=6jxr&showanno=1&showsets=1)
 * <b>mmcifid</b>: mmCIF ID, e.g., [https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?mmcifid=1tup&show2d=1&showsets=1](https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?mmcifid=1tup&showanno=1&showsets=1)
 * <b>gi</b>: NCBI protein gi number, [https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?gi=1310960&show2d=1&showsets=1](https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?gi=1310960&show2d=1&showsets=1)
-* <b>uniprotid</b>: UniProt ID, [https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?uniprotid=P0DTC2](https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?uniprotid=P0DTC2)
 * <b>cid</b>: PubChem Compound ID, e.g., [https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?cid=2244](https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?cid=2244)
 * <b>align two structures</b>: two PDB IDs or MMDB IDs for structure alignment, e.g., [https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?align=1hho,4n7n&showalignseq=1&show2d=1&showsets=1](https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?align=1hho,4n7n&showalignseq=1&show2d=1&showsets=1)
 * <b>align multiple chains</b>: any multiple chains for structure alignment, e.g., [https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?chainalign=1HHO_A,4N7N_A&showalignseq=1&show2d=1&showsets=1](https://www.ncbi.nlm.nih.gov/Structure/icn3d/full.html?chainalign=1HHO_A,4N7N_A&showalignseq=1&show2d=1&showsets=1)
@@ -131,3 +139,5 @@ Bioinformatics. 2020 Jan 1;36(1):131-135. doi: 10.1093/bioinformatics/btz502.
 To cite iCn3D, please reference:
 
 Wang J, Youkharibache P, Zhang D, Lanczycki CJ, Geer RC, Madej T, Phan L, Ward M, Lu S, Marchler GH, Wang Y, Bryant SH, Geer LY, Marchler-Bauer A. *iCn3D, a Web-based 3D Viewer for Sharing 1D/2D/3D Representations of Biomolecular Structures.* **_Bioinformatics_. 2020** Jan 1; 36(1):131-135. (Epub 2019 June 20.) [doi: 10.1093/bioinformatics/btz502](https://dx.doi.org/10.1093/bioinformatics/btz502). [PubMed PMID: 31218344](https://www.ncbi.nlm.nih.gov/pubmed/31218344), [Full Text at Oxford Academic](https://academic.oup.com/bioinformatics/article/36/1/131/5520951)
+
+Wang J, Youkharibache P, Marchler-Bauer A, Lanczycki C, Zhang D, Lu S, Madej T, Marchler GH, Cheng T, Chong LC, Zhao S, Yang K, Lin J, Cheng Z, Dunn R, Malkaram SA, Tai C-H, Enoma D, Busby B, Johnson NL, Tabaro F, Song G, Ge Y. *iCn3D: From Web-Based 3D Viewer to Structural Analysis Tool in Batch Mode.* **_Front. Mol. Biosci._ 2022** 9:831740. (Epub 2022 Feb 17.) [doi: 10.3389/fmolb.2022.831740](https://dx.doi.org/10.3389/fmolb.2022.831740). [PubMed PMID: 35252351](https://www.ncbi.nlm.nih.gov/pubmed/35252351), [Full Text at Frontiers](https://www.frontiersin.org/articles/10.3389/fmolb.2022.831740/full)

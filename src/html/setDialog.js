@@ -96,6 +96,36 @@ class SetDialog {
 
         html += me.htmlCls.setHtmlCls.setAdvanced(2);
 
+        html += me.htmlCls.divStr + "dl_vastplus' class='" + dialogClass + "' style='max-width:500px'>";
+        html += "Note: <b>VAST+</b> finds other macromolecular structures that have a similar biological unit. To do this, VAST+ takes into consideration the complete set of 3D domains that VAST identified within a query structure, throughout all of its component protein molecules, and finds other macromolecular structures that have a similar set of proteins/3D domains.<br><br>"; 
+        html += "PDB ID: " + me.htmlCls.inputTextStr + "id='" + me.pre + "vastpluspdbid' value='1HHO' size=8><br>";
+        html += me.htmlCls.buttonStr + "reload_vastplus'>VAST+</button>";
+        html += "</div>";
+
+        html += me.htmlCls.divStr + "dl_vast' class='" + dialogClass + "' style='max-width:500px'>";
+        html += 'Note: <b>VAST</b> identifies 3D domains (substructures) within each protein structure in the Molecular Modeling Database (MMDB), and then finds other protein structures that have one or more similar 3D domains, using purely geometric criteria. You have two ways to do a VAST search.<br><br>'; 
+        html += '<b>Optione 1</b>, search with PDB ID and chain name:<br>'; 
+        html += "PDB ID: " + me.htmlCls.inputTextStr + "id='" + me.pre + "vastpdbid' value='1HHO' size=8> &nbsp;&nbsp;";
+        html += "Chain Name: " + me.htmlCls.inputTextStr + "id='" + me.pre + "vastchainid' value='A' size=8> <br>";
+        html += me.htmlCls.buttonStr + "reload_vast'>VAST</button><br><br>";
+
+        html += '<b>Optione 2</b>, search with a PDB file:<br>'; 
+        html += '<form method=post enctype=multipart/form-data action="https://www.ncbi.nlm.nih.gov/Structure/vast/VSMmdb.cgi" name="newvs" target="_blank">';
+        html += "PDB File: " + me.htmlCls.inputFileStr + " name='pdbfile' size=8><br>";
+        html += "Searching against: <input type='radio' name='dataset' value='Non-redundant subset' checked> Medium-redundancy Subset of PDB <a href='https://www.ncbi.nlm.nih.gov/Structure/VAST/vasthelp.html#VASTNR' title='Medium-redundancy Subset' target='_blank'>?</a> <input type='radio' name='dataset' value='All'>All of PDB <br>";
+        // the submit value has to be "Submit" in order to make the backend cgi works
+        //html += '<input type="submit" name="cmdVSMmdb" value="VAST Search"></input>';
+        html += '<input type="submit" name="cmdVSMmdb" value="Submit"></input>';
+        html += "</form>";
+
+        html += "</div>";
+
+        html += me.htmlCls.divStr + "dl_foldseek' class='" + dialogClass + "' style='max-width:500px'>";
+        html += 'Note: You can search similar PDB or AlphaFold structures for any structure at the fast <a href="https://search.foldseek.com/search" target="_blank">Foldseek</a> web server. <br><br>Once you see the structure neighbors, you can view the alignment in iCn3D by inputing a list of chain IDs below. <br><br>The PDB chain IDs are the same as the record names such as "1hho_A". The AlphaFold chain IDs are the UniProt ID plus "_A". For example, the UniProt ID for the record name "AF-P69905-F1-model_v2" is "P69905".<br><br>'; 
+        html += "Chain ID List: " + me.htmlCls.inputTextStr + "id='" + me.pre + "foldseekchainids' value='P69905_A,P01942_A,1HHO_A' size=30> ";
+        html += me.htmlCls.buttonStr + "reload_foldseek'>Align</button>";
+        html += "</div>";
+
         html += me.htmlCls.divStr + "dl_mmtfid' class='" + dialogClass + "'>";
         html += "MMTF ID: " + me.htmlCls.inputTextStr + "id='" + me.pre + "mmtfid' value='1TUP' size=8> ";
         html += me.htmlCls.buttonStr + "reload_mmtf'>Load</button>";
@@ -113,9 +143,9 @@ class SetDialog {
         let afid = (me.cfg.afid) ? me.cfg.afid : 'Q76EI6';
 
         html += "<a href='https://alphafold.ebi.ac.uk/' target='_blank'>AlphaFold Uniprot</a> ID: " + me.htmlCls.inputTextStr + "id='" + me.pre + "afid' value='" + afid + "' size=10><br><br>";
-        html += me.htmlCls.buttonStr + "reload_af'>Load Structure</button>" 
-            + me.htmlCls.buttonStr + "reload_afmap' style='margin-left:30px'>Load Half PAE Map</button>"
-            + me.htmlCls.buttonStr + "reload_afmapfull' style='margin-left:30px'>Load Full PAE Map (slow)</button>";
+        html += me.htmlCls.buttonStr + "reload_af'>Load Structure</button><br><br>" 
+        html += "PAE Map: " + me.htmlCls.buttonStr + "reload_afmap'>Load Half</button>"
+            + me.htmlCls.buttonStr + "reload_afmapfull' style='margin-left:30px'>Load Full (slow)</button>";
         html += "</div>";
 
         html += me.htmlCls.divStr + "dl_opmid' class='" + dialogClass + "'>";
@@ -130,7 +160,7 @@ class SetDialog {
         html += "</div>";
 
         html += me.htmlCls.divStr + "dl_pdbfile_app' class='" + dialogClass + "'>";
-        html += "PDB File: " + me.htmlCls.inputFileStr + " id='" + me.pre + "pdbfile_app' size=8> ";
+        html += "Multiple PDB Files: <input type='file' multiple id='" + me.pre + "pdbfile_app' size=8> ";
         html += me.htmlCls.buttonStr + "reload_pdbfile_app'>Append</button>";
         html += "</div>";
 
@@ -173,6 +203,11 @@ class SetDialog {
         html += me.htmlCls.buttonStr + "reload_align_ori'>All Matching Molecules Superposed</button>" + me.htmlCls.space3 + me.htmlCls.buttonStr + "reload_align_refined'>Invariant Substructure Superposed</button>";
         html += "</div>";
 
+        html += me.htmlCls.divStr + "dl_alignaf' class='" + dialogClass + "'>";
+        html += "Enter two <a href='https://alphafold.ebi.ac.uk/' target='_blank'>AlphaFold Uniprot</a> IDs: <br/><br/>ID1: " + me.htmlCls.inputTextStr + "id='" + me.pre + "alignafid1' value='P41327' size=8>" + me.htmlCls.space3 + me.htmlCls.space3 + "ID2: " + me.htmlCls.inputTextStr + "id='" + me.pre + "alignafid2' value='P41331' size=8><br/><br/>";
+        html += me.htmlCls.buttonStr + "reload_alignaf'>Align</button>";
+        html += "</div>";
+
         html += me.htmlCls.divStr + "dl_chainalign' class='" + dialogClass + "'>";
     /*
         html += "Enter the PDB chain IDs in the form of pdbid_chain(e.g., 1HHO_A, case sensitive): <br/><br/>ID1: " + me.htmlCls.inputTextStr + "id='" + me.pre + "chainalignid1' value='1HHO_A' size=8>" + me.htmlCls.space3 + me.htmlCls.space3 + "ID2: " + me.htmlCls.inputTextStr + "id='" + me.pre + "chainalignid2' value='4N7N_A' size=8><br/><br/>";
@@ -181,13 +216,13 @@ class SetDialog {
         html += "</div>";
     */
         html += "<div style='width:550px'>";
-        html += "All chains will be aligned to the first chain in the comma-separated chain IDs. Each chain ID has the form of pdbid_chain(e.g., 1HHO_A, case sensitive).<br/><br/>";
-        html += "<b>Chain IDs</b>: " + me.htmlCls.inputTextStr + "id='" + me.pre + "chainalignids' value='1HHO_A,4N7N_A,2HCO_A' size=50><br/><br/>";
+        html += "All chains will be aligned to the first chain in the comma-separated chain IDs. Each chain ID has the form of PDBID_chain (e.g., 1HHO_A, case sensitive) or UniprotID (e.g., P69905 for AlphaFold structures).<br/><br/>";
+        html += "<b>Chain IDs</b>: " + me.htmlCls.inputTextStr + "id='" + me.pre + "chainalignids' value='P69905,P01942,1HHO_A' size=50><br/><br/>";
         html += "<b>Optional 1</b>, full chains are used for structure alignment<br/><br/>";
         html += "<b>Optional 2</b>, sequence alignment (followed by structure alignemnt) based on residue numbers in the First/Master chain: <br>" + me.htmlCls.inputTextStr + "id='" + me.pre + "resalignids' placeholder='1,5,10-50' size=50><br/><br/>";
-        html += "<b>Optional 3</b>, predefined alignment with residue numbers in each chain specified (one chain per line): <br><textarea id='" + me.pre + "predefinedres' rows='5' style='width: 100%; height: " +(me.htmlCls.LOG_HEIGHT) + "px; padding: 0px; border: 0px;' placeholder='1,5,10-50\n1,5,10-50\n1,5,10-50'></textarea><br/><br/>";
+        html += "<b>Optional 3</b>, predefined alignment with the first chain as the master. The rest chains are aligned to the master chain. Each alignment is defined as \" | \"-separated residue lists in one line. \"10-50\" means a range of residues from 10 to 50.<br><textarea id='" + me.pre + "predefinedres' rows='5' style='width: 100%; height: " +(me.htmlCls.LOG_HEIGHT) + "px; padding: 0px; border: 0px;' placeholder='1,5,10-50 | 1,5,10-50     \n2,6,11-51 | 1,5,10-50'></textarea><br/><br/>";
         html += me.htmlCls.buttonStr + "reload_chainalign_asym'>Align Asymmetric Unit</button>" + me.htmlCls.buttonStr + "reload_chainalign' style='margin-left:30px'>Align Biological Unit</button><br/><br/>";
-        html += "(Note: To align chains in custom PDB files, you could concatenate PDB files in a single PDB file with the separation line \"ENDMDL\". Then load it in \"Open File > PDB File\" in the \"File\" menu and click \"View Sequences & Annotations\" in the \"Window\" menu. Finally select multiple chains in the sequence window and click \"Realign Selection\" in the \"File\" menu.)<br><br>";
+        html += "(Note: To align chains in custom PDB files, you could load them in \"File > Open File > PDB Files (appendable)\" and click \"Analysis > Defined Sets\". Finally select multiple chains in Defined Sets and click \"File > Realign Selection\".)<br><br>";
         html += "</div></div>";
 
         html += me.htmlCls.divStr + "dl_mutation' class='" + dialogClass + "'>";
@@ -255,6 +290,18 @@ class SetDialog {
           + me.pre + 'asu_bu_shrink" class="ui-icon ui-icon-minus icn3d-shrink icn3d-link" style="display:none; width:15px;" title="Shrink"></span></div>';
 
         html += me.htmlCls.divStr + "asu_bu' style='display:none;'>";
+        html += 'which can range from a monomer (single protein molecule) to an oligomer of 100+ protein molecules.<br><br>The "<b>asymmetric unit</b>" is the raw 3D structure data resolved by X-ray crystallography, NMR, or Cryo-electron microscopy. The asymmetric unit is equivalent to the biological unit in approximately 60% of structure records. In the remaining 40% of the records, the asymmetric unit represents a portion of the biological unit that can be reconstructed using crystallographic symmetry, or it represents multiple copies of the biological unit.</div>';
+
+        html += "</div>";
+
+        html += me.htmlCls.divStr + "dl_mmdbafid' class='" + dialogClass + "' style='max-width:500px'>";
+        html += "List of MMDB, PDB, or AlphaFold UniProt IDs: " + me.htmlCls.inputTextStr + "id='" + me.pre + "mmdbafid' value='1HHO,4N7N,P69905,P01942' size=30> <br><br>";
+        html += me.htmlCls.buttonStr + "reload_mmdbaf_asym'>Load Asymmetric Unit (All Chains)</button>" + me.htmlCls.buttonStr + "reload_mmdbaf' style='margin-left:30px'>Load Biological Unit</button><br/><br/><br>";
+        html += '<b>Note</b>: The "<b>biological unit</b>" is the <b>biochemically active form of a biomolecule</b>, <div style="width:20px; margin:6px 0 0 20px; display:inline-block;"><span id="'
+        + me.pre + 'asu_bu2_expand" class="ui-icon ui-icon-plus icn3d-expand icn3d-link" style="width:15px;" title="Expand"></span><span id="'
+        + me.pre + 'asu_bu2_shrink" class="ui-icon ui-icon-minus icn3d-shrink icn3d-link" style="display:none; width:15px;" title="Shrink"></span></div>';
+
+        html += me.htmlCls.divStr + "asu_bu2' style='display:none;'>";
         html += 'which can range from a monomer (single protein molecule) to an oligomer of 100+ protein molecules.<br><br>The "<b>asymmetric unit</b>" is the raw 3D structure data resolved by X-ray crystallography, NMR, or Cryo-electron microscopy. The asymmetric unit is equivalent to the biological unit in approximately 60% of structure records. In the remaining 40% of the records, the asymmetric unit represents a portion of the biological unit that can be reconstructed using crystallographic symmetry, or it represents multiple copies of the biological unit.</div>';
 
         html += "</div>";
@@ -465,7 +512,7 @@ class SetDialog {
         html += "</select></div>";
 
         html += "</td></tr></table>";
-
+/*
         if(me.cfg.align !== undefined || me.cfg.chainalign !== undefined) {
             html += "<div>4. <b>Cross Structure Interactions</b>: <select id='" + me.pre + "crossstrucinter'>";
             html += me.htmlCls.optionStr + "'1'>Yes</option>";
@@ -474,8 +521,9 @@ class SetDialog {
             html += "<div style='text-indent:1.1em'>" + me.htmlCls.buttonStr + "applyhbonds'>3D Display Interactions</button></div><br>";
         }
         else {
+*/            
             html += "<div>4. " + me.htmlCls.buttonStr + "applyhbonds'>3D Display Interactions</button></div><br>";
-        }
+//        }
 
         html += "<div style='text-indent:1.1em'>" + me.htmlCls.buttonStr + "hbondWindow'>Highlight Interactions in Table</button><span style='margin-left:30px; font-wieght:bold'>Sort Interactions on</span>: " + me.htmlCls.buttonStr + "sortSet1'> Set 1</button>" + me.htmlCls.buttonStr + "sortSet2' style='margin-left:20px'>Set 2</button></div><br>";
 
@@ -505,12 +553,41 @@ class SetDialog {
 
         html += me.htmlCls.divStr + "dl_realign' class='" + dialogClass + "'>";
 
-        html += me.htmlCls.divNowrapStr + "1. Select sets from two structures below <br>or use your current selection:</div><br>";
+        html += me.htmlCls.divNowrapStr + "1. Select sets below <br>or use your current selection:</div><br>";
         html += "<div style='text-indent:1.1em'><select id='" + me.pre + "atomsCustomRealign' multiple size='5' style='min-width:130px;'>";
         html += "</select></div>";
 
-        html += "<div>2. " + me.htmlCls.buttonStr + "applyRealign'>Realign</button></div><br>";
+        html += "<div>2. " + me.htmlCls.buttonStr + "applyRealign'>Realign by Sequence</button></div><br>";
         html += "</div>";
+
+        html += me.htmlCls.divStr + "dl_realignbystruct' class='" + dialogClass + "'>";
+
+        html += me.htmlCls.divNowrapStr + "1. Select sets below <br>or use your current selection:</div><br>";
+        html += "<div style='text-indent:1.1em'><select id='" + me.pre + "atomsCustomRealignByStruct' multiple size='5' style='min-width:130px;'>";
+        html += "</select></div>";
+
+        html += "<div>2. " + me.htmlCls.buttonStr + "applyRealignByStruct'>Realign by Structure</button></div><br>";
+        html += "</div>";
+
+
+        html += me.htmlCls.divStr + "dl_colorspectrumbysets' class='" + dialogClass + "'>";
+
+        html += me.htmlCls.divNowrapStr + "1. Select sets below:</div><br>";
+        html += "<div style='text-indent:1.1em'><select id='" + me.pre + "atomsCustomColorSpectrum' multiple size='5' style='min-width:130px;'>";
+        html += "</select></div>";
+
+        html += "<div>2. " + me.htmlCls.buttonStr + "applyColorSpectrumBySets'>Spectrum Color for Sets</button></div><br>";
+        html += "</div>";
+
+        html += me.htmlCls.divStr + "dl_colorrainbowbysets' class='" + dialogClass + "'>";
+
+        html += me.htmlCls.divNowrapStr + "1. Select sets below:</div><br>";
+        html += "<div style='text-indent:1.1em'><select id='" + me.pre + "atomsCustomColorRainbow' multiple size='5' style='min-width:130px;'>";
+        html += "</select></div>";
+
+        html += "<div>2. " + me.htmlCls.buttonStr + "applyColorRainbowBySets'>Rainbow Color for Sets</button></div><br>";
+        html += "</div>";
+
 
         html += me.htmlCls.divStr + "dl_allinteraction' style='background-color:white' class='" + dialogClass + "'>";
         html += "</div>";
@@ -738,6 +815,25 @@ class SetDialog {
 
         html += me.htmlCls.spanNowrapStr + "2. Color: " + me.htmlCls.inputTextStr + "id='" + me.pre + "distancecolor2' value='" + defaultColor + "' size=4><br/><br/>";
         html += me.htmlCls.spanNowrapStr + "3. " + me.htmlCls.buttonStr + "applydist2'>Display</button></span>";
+        html += "</div>";
+
+        html += me.htmlCls.divStr + "dl_distmanysets' class='" + dialogClass + "'>";
+        html += me.htmlCls.spanNowrapStr + "1. Select sets for pairwise distances</span><br/>";
+        html += "<table border=0 width=400 cellspacing=10><tr><td>";
+
+        html += me.htmlCls.divNowrapStr + "First sets:</div>";
+        html += "<div style='text-indent:1.1em'><select style='max-width:200px' id='" + me.pre + "atomsCustomDistTable2' multiple size='5' style='min-width:130px;'>";
+        html += "</select></div>";
+
+        html += "</td><td>";
+
+        html += me.htmlCls.divNowrapStr + "Second sets:</div>";
+        html += "<div style='text-indent:1.1em'><select style='max-width:200px' id='" + me.pre + "atomsCustomDistTable' multiple size='5' style='min-width:130px;'>";
+        html += "</select></div>";
+
+        html += "</td></tr></table>";
+
+        html += me.htmlCls.spanNowrapStr + "2. " + me.htmlCls.buttonStr + "applydisttable'>Distances in Table</button></span>";
         html += "</div>";
 
         html += me.htmlCls.divStr + "dl_stabilizer_rm' class='" + dialogClass + "'>";
@@ -970,6 +1066,12 @@ class SetDialog {
         html += "<b>Min B-factor</b>: " + me.htmlCls.inputTextStr + "id='" + me.pre + "minbfactor' value='0' size='10'>% <br>";
         html += "<b>Max B-factor</b>: " + me.htmlCls.inputTextStr + "id='" + me.pre + "maxbfactor' value='100' size='10'>% <br>";
         html += "<button style='white-space:nowrap;' id='" + me.pre + "applypropbybfactor'>Apply</button><br/><br/>";
+        html += "</div>";
+
+        html += me.htmlCls.divStr + "dl_legend' class='" + dialogClass + "' style='max-width:500px'>";
+        html += "</div>";
+
+        html += me.htmlCls.divStr + "dl_disttable' class='" + dialogClass + "'>";
         html += "</div>";
 
         html += "</div>";
